@@ -1,0 +1,69 @@
+<launch>
+    <!-- =====================================================================
+         Mow-e VIO bring-up on OKVIS2-X: OV9281 stereo + SCH16T IMU over ROS
+         topics -> okvis2x_node_subscriber. BRISK frontend by default.
+         Ported from okvis2-mowe launch/okvis_mowe_ov9281.launch.xml.
+         See README_mowe_bringup.md.
+
+         Both sensor nodes are LifecycleNodes; their own launch files drive the
+         configure->activate transitions, so we INCLUDE them rather than respawn
+         the bare nodes. Topic adaptation is done on the OKVIS (consumer) side,
+         because remaps do not propagate into <include>d files.
+
+         Producer topics            ->  OKVIS fixed topics
+            /mowe_camera/left/image_raw  -> /okvis/cam0/image_raw
+            /mowe_camera/right/image_raw -> /okvis/cam1/image_raw
+            /imu/data_raw                -> /okvis/imu0
+         (Both producers publish SensorDataQoS/BEST_EFFORT; the OKVIS Subscriber
+          subscribes best-effort to match — see okvis_ros2/src/Subscriber.cpp.)
+
+         OKVIS2-X: okvis2x_node_subscriber always parses se_config_filename,
+         even with output_parameters.enable_submapping: false, so we pass
+         config/mowe/se2.yaml (a verbatim copy of config/euroc/se2.yaml that is
+         parsed but not used). The direct-ingest node does not need it.
+         ===================================================================== -->
+
+    <arg name="config_filename"
+         default="$(find-pkg-share okvis)/config/mowe/okvis2.yaml"/>
+    <arg name="se_config_filename"
+         default="$(find-pkg-share okvis)/config/mowe/se2.yaml"/>
+    <arg name="camera_config"
+         default="$(find-pkg-share mowe_camera)/config/ov9281_stereo.yaml"/>
+    <arg name="imu_config"
+         default="$(find-pkg-share sch16t_imu_node)/config/sch16t_default.yaml"/>
+    <arg name="csv_path" default="/tmp/"/>
+    <arg name="rviz"   default="true"/>
+    <arg name="camera" default="true"/>  <!-- false: feed images from a rosbag -->
+    <arg name="imu"    default="true"/>   <!-- false: feed IMU from a rosbag -->
+
+    <!-- as in the upstream OKVIS2-X launch files -->
+    <set_env name="OMP_NUM_THREADS" value="2"/>
+
+    <!-- OV9281 stereo (split mode, two identical-stamp Image topics) -->
+    <include file="$(find-pkg-share mowe_camera)/launch/mowe_camera.launch.xml"
+             if="$(var camera)">
+        <arg name="config_file" value="$(var camera_config)"/>
+    </include>
+
+    <!-- SCH16T IMU (CLOCK_MONOTONIC stamps, same epoch as the camera) -->
+    <include file="$(find-pkg-share sch16t_imu_node)/launch/sch16t.launch.xml"
+             if="$(var imu)">
+        <arg name="config_file" value="$(var imu_config)"/>
+    </include>
+
+    <!-- OKVIS2-X estimator (topic subscriber) -->
+    <node pkg="okvis" exec="okvis2x_node_subscriber" name="okvis" namespace="okvis">
+        <!-- >0.0 publishes IMU-propagated live state between keyframes -->
+        <param name="imu_propagated_state_publishing_rate" value="200.0"/>
+        <param name="config_filename" value="$(var config_filename)"/>
+        <param name="se_config_filename" value="$(var se_config_filename)"/>
+        <param name="csv_path" value="$(var csv_path)"/>
+        <remap from="/okvis/cam0/image_raw" to="/mowe_camera/left/image_raw"/>
+        <remap from="/okvis/cam1/image_raw" to="/mowe_camera/right/image_raw"/>
+        <remap from="/okvis/imu0"           to="/imu/data_raw"/>
+    </node>
+
+    <node pkg="rviz2" exec="rviz2" name="rviz2" namespace="okvis"
+          args="-d $(find-pkg-share okvis)/config/rviz2/rviz2_config.rviz"
+          if="$(var rviz)"/>
+</launch>

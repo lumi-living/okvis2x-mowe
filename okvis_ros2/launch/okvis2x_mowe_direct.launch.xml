@@ -1,0 +1,63 @@
+<launch>
+    <!-- =====================================================================
+         Mow-e VIO on OKVIS2-X, DIRECT camera ingest (ADR-0040 §2).
+         Ported from okvis2-mowe launch/okvis_mowe_direct.launch.xml.
+
+         okvis2x_node_mowe owns the OV9281 stereo pair via mowe_camera_core:
+         both eyes arrive as ONE hardware-synchronized FrameBundle (single
+         V4L2 frame, single CLOCK_MONOTONIC SOF stamp), fed straight into
+         ThreadedSlam::addImages. No image topics, no DDS on the hot path, no
+         camera lifecycle-activation trap, and the stereo pair can never
+         split or half-drop (the failure modes of okvis2x_mowe_ov9281).
+
+         Only the IMU rides ROS: the sch16t LifecycleNode is included here and
+         okvis2x_node_mowe drives its configure->activate transitions itself
+         at startup (the launch-side auto-activate helpers are unreliable).
+
+         VI(+GNSS) only: no supereight2 submapping, so no se_config_filename.
+         Requires a build with -DUSE_MOWE_XFEAT=ON (the node links
+         mowe_camera_core); the XFeat config additionally needs
+         -DUSE_TENSORRT=ON and the .plan engines on the device. For the BRISK
+         baseline through this node pass
+         config_filename:=$(find-pkg-share okvis)/config/mowe/okvis2.yaml.
+         ===================================================================== -->
+
+    <arg name="config_filename"
+         default="$(find-pkg-share okvis)/config/mowe/okvis2-xfeat.yaml"/>
+    <arg name="imu_config"
+         default="$(find-pkg-share sch16t_imu_node)/config/sch16t_default.yaml"/>
+    <arg name="camera_device" default="/dev/video1"/>
+    <arg name="camera_fps"    default="50.0"/>
+    <!-- Feed every Nth frame to the estimator (sensor mode stays at 50 fps).
+         2 -> 25 Hz: still plenty for VIO, halves the realtime frame drops. -->
+    <arg name="camera_decimation" default="2"/>
+    <arg name="csv_path"      default="/tmp/"/>
+    <arg name="rviz"          default="true"/>
+    <arg name="imu"           default="true"/>  <!-- false: feed IMU from a rosbag -->
+
+    <!-- as in the upstream OKVIS2-X launch files -->
+    <set_env name="OMP_NUM_THREADS" value="2"/>
+
+    <!-- SCH16T IMU node (lifecycle; activated by okvis2x_node_mowe) -->
+    <include file="$(find-pkg-share sch16t_imu_node)/launch/sch16t.launch.xml"
+             if="$(var imu)">
+        <arg name="config_file" value="$(var imu_config)"/>
+    </include>
+
+    <!-- OKVIS2-X estimator with direct camera ingest -->
+    <node pkg="okvis" exec="okvis2x_node_mowe" name="okvis" namespace="okvis">
+        <!-- >0.0 publishes IMU-propagated live state between keyframes -->
+        <param name="imu_propagated_state_publishing_rate" value="200.0"/>
+        <param name="config_filename" value="$(var config_filename)"/>
+        <param name="camera_device" value="$(var camera_device)"/>
+        <param name="camera_fps" value="$(var camera_fps)"/>
+        <param name="camera_decimation" value="$(var camera_decimation)"/>
+        <param name="activate_lifecycle_node" value="/sch16t_imu_node"/>
+        <param name="csv_path" value="$(var csv_path)"/>
+        <remap from="/okvis/imu0" to="/imu/data_raw"/>
+    </node>
+
+    <node pkg="rviz2" exec="rviz2" name="rviz2" namespace="okvis"
+          args="-d $(find-pkg-share okvis)/config/rviz2/rviz2_config.rviz"
+          if="$(var rviz)"/>
+</launch>

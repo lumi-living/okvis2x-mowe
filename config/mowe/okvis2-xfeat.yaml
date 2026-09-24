@@ -1,0 +1,199 @@
+%YAML:1.0
+# -----------------------------------------------------------------------------
+# okvis2x-mowe (OKVIS2-X 38043e4 port, 2026-09-24): ported from okvis2-mowe
+# config/ov9281_sch16t_xfeat.yaml (baf246f). OKVIS2-X-only changes, all marked "OKVIS2-X":
+#   * cameras[].cam_model: pinhole   (REQUIRED by the OKVIS2-X reader; without
+#     it no camera is added at all, numCameras() == 0, and no error is raised)
+#   * imu_parameters.s_a             (required; accelerometer scale factor)
+#   * output_parameters.display_topview / enable_submapping (required)
+#   * gps_parameters                 (new; GNSS factor config, see bottom)
+# Calibration values are unchanged from okvis2-mowe (still TODO-CALIB).
+# NOTE: never put ": " inside a trailing comment on a block-scalar line;
+# cv::FileStorage keeps the comment in the scalar and then fails to parse it.
+# -----------------------------------------------------------------------------
+# =============================================================================
+# OKVIS2 config — Mow-e bench rig, XFeat + LighterGlue frontend (ADR-0040)
+# =============================================================================
+# Same rig as config/mowe/okvis2.yaml (OV9281 stereo + SCH16T), but the frontend is
+# XFeat-on-TensorRT instead of BRISK (frontend_parameters.xfeat below):
+#   * detection/description = XFeat engine (static 1280x800 mono, top-2048)
+#   * descriptor matching   = cosine distance on 64-D float descriptors —
+#     matching_threshold is a COSINE DISTANCE (1 - cos similarity), not Hamming
+#   * stereo / motion-stereo pair matching = LighterGlue engine (when built,
+#     ADR-0040 stage B/C; empty lighterglue_engine falls back to cosine NN)
+#   * loop closures OFF — the DBoW vocabulary is BRISK-trained and unusable
+#     with XFeat (DINOv2/FAISS is the planned replacement, ADR-0040 issue #5)
+# Requires: okvis built with USE_MOWE_XFEAT=ON + USE_TENSORRT=ON and the .plan
+# engines on device (see /opt/mowe/onnx). BRISK A/B baseline: okvis2.yaml.
+#
+# ⚠️ CALIBRATION STATUS — three numbers must be filled before pose is metric:
+#   1. Camera INTRINSICS (focal_length, principal_point, distortion) — REQUIRED.
+#      You CAN do this now: single-camera checkerboard (cv2.calibrateCamera /
+#      ROS camera_calibration). Placeholders below are sensor-geometry guesses
+#      and WILL give wrong scale/structure until replaced.
+#   2. Stereo EXTRINSICS (cam0<->cam1 baseline in T_SC) — from mechanical CAD
+#      until a stereo calibration (Kalibr) is possible. Placeholder baseline.
+#   3. Camera<->IMU EXTRINSICS (T_SC rotation/translation rel. to SCH16T) —
+#      needs Kalibr (the "no means yet" TODO). Placeholder = axis-aligned mount.
+# Every placeholder below is tagged  # TODO-CALIB.
+# =============================================================================
+
+# extrinsics and intrinsics per camera
+cameras:
+     # ---- cam0 = LEFT OV9281 -------------------------------------------------
+     - {T_SC:                                              # camera->IMU(sensor)
+        # TODO-CALIB: rotation = axis-aligned placeholder (camera optical axes
+        # assumed +Z fwd, +X right, +Y down == IMU axes). Translation = LEFT
+        # camera position in the SCH16T body frame [m]. Fill from CAD/Kalibr.
+        [ 1.0, 0.0, 0.0, -0.050,
+          0.0, 1.0, 0.0,  0.000,
+          0.0, 0.0, 1.0,  0.000,
+          0.0, 0.0, 0.0,  1.0 ],
+        image_dimension: [1280, 800],                      # OV9281 native == XFeat engine dims
+        distortion_coefficients: [0.0, 0.0, 0.0, 0.0],     # TODO-CALIB
+        distortion_type: radialtangential,                 # M12 lens; revisit if fisheye
+        focal_length: [1000.0, 1000.0],                    # TODO-CALIB (px)
+        principal_point: [640.0, 400.0],                   # TODO-CALIB (image centre)
+        cam_model: pinhole,                                # OKVIS2-X, required
+        camera_type: gray,                                 # OV9281 is mono
+        slam_use: okvis}
+
+     # ---- cam1 = RIGHT OV9281 ------------------------------------------------
+     - {T_SC:
+        # TODO-CALIB: RIGHT camera = LEFT + stereo baseline along +X. Placeholder
+        # baseline 0.10 m (cam0 at -0.05, cam1 at +0.05). Replace with the real
+        # mechanical inter-camera distance, then Kalibr.
+        [ 1.0, 0.0, 0.0,  0.050,
+          0.0, 1.0, 0.0,  0.000,
+          0.0, 0.0, 1.0,  0.000,
+          0.0, 0.0, 0.0,  1.0 ],
+        image_dimension: [1280, 800],
+        distortion_coefficients: [0.0, 0.0, 0.0, 0.0],     # TODO-CALIB
+        distortion_type: radialtangential,
+        focal_length: [1000.0, 1000.0],                    # TODO-CALIB (px)
+        principal_point: [640.0, 400.0],                   # TODO-CALIB
+        cam_model: pinhole,                                # OKVIS2-X, required
+        camera_type: gray,
+        slam_use: okvis}
+
+# additional camera parameters
+camera_parameters:
+    timestamp_tolerance: 0.003 # [s] stereo out-of-sync tolerance. The mowe_camera
+                               # ov9281_sync node HW-syncs the pair and emits
+                               # IDENTICAL stamps (split mode), so this is tight.
+    # image_delay: timestamp_camera_correct = timestamp_camera - image_delay.
+    # Both sensors are on CLOCK_MONOTONIC (sch16t: RCL_STEADY_TIME at SPI read;
+    # ov9281: SOF, ADR-0015), i.e. ONE clock epoch — no host/sensor clock skew.
+    # The only residual is sub-frame: camera stamp is START-of-frame, not mid-
+    # exposure, and the IMU stamp carries DRDY->SPI-read latency. Start at 0 and
+    # tune (a negative value pulls camera time toward mid-exposure: ~ -exposure/2).
+    image_delay: 0.0 # TODO-TUNE
+    sync_cameras: [0,1]
+    online_calibration:
+        do_extrinsics: false # keep false until intrinsics are calibrated; flip on
+                             # later to let OKVIS refine the placeholder T_SC.
+        do_extrinsics_final_ba: false
+        sigma_r: 0.01
+        sigma_alpha: 0.1
+        sigma_r_final_ba: 0.03
+        sigma_alpha_final_ba: 0.3
+
+# the IMU sensor model — Murata SCH16T-K01
+imu_parameters:
+    use: true
+    # Values below are derived from the SCH16T-K01 datasheet (Doc.No. 11624
+    # Rev.6, Table 4 gyro / Table 6 accel), converted to OKVIS continuous-time
+    # units. The white-noise densities (sigma_g_c, sigma_a_c) and saturation/
+    # offset figures are datasheet-direct. The bias RANDOM-WALK densities
+    # (sigma_gw_c, sigma_aw_c) are NOT given by the datasheet (it lists bias
+    # *instability*, the flicker floor, not the +1/2-slope RW term) — they are
+    # scaled from a known-good VIO reference and must be refined from an
+    # on-rig Allan-variance log. If the filter is over-confident / diverges,
+    # INFLATE the white-noise densities 2-4x (datasheet white noise ignores
+    # mounting vibration, quantisation, thermals).
+    a_max: 163.84   # accel saturation [m/s^2]  (default dynamic range +-163.84)
+    g_max: 5.72     # gyro saturation  [rad/s]  (+-327.68 deg/s dynamic range)
+    # gyro white-noise density: Z-axis 0.0006 deg/s/sqrtHz (worst) -> rad
+    # (XY axes are 0.0004 -> 6.98e-6; using Z to be conservative)
+    sigma_g_c: 1.05e-05  # gyro noise density [rad/s/sqrt(Hz)]
+    sigma_bg: 5.0e-03    # gyro bias prior [rad/s] — covers offset max +-0.3 deg/s
+    # accel white-noise density: 0.8 mm/s^2/sqrtHz -> m/s^2
+    sigma_a_c: 8.0e-04   # accel noise density [m/s^2/sqrt(Hz)]
+    sigma_ba: 0.06       # accel bias prior [m/s^2] — covers offset max +-0.06
+    sigma_gw_c: 3.0e-06  # gyro bias RW [rad/s^2/sqrt(Hz)] — ESTIMATE, refine via Allan
+    sigma_aw_c: 1.3e-03  # accel bias RW [m/s^3/sqrt(Hz)] — ESTIMATE, refine via Allan
+    a0: [ 0.0, 0.0, 0.0 ]
+    g0: [ 0.0, 0.0, 0.0 ]
+    s_a: [ 1.0, 1.0, 1.0 ] # OKVIS2-X, accel scale factor, a_true = s_a * a_meas + b_a
+    g: 9.819            # gravity [m/s^2] — Finland (~60degN); Helsinki ~ 9.819
+    T_BS:               # body<-sensor; identity == body frame IS the SCH16T frame
+        [ 1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0 ]
+
+# frontend: XFeat-on-TensorRT (ADR-0040). BRISK detection params are parsed but
+# ignored when xfeat.use is set; matching_threshold changes meaning (see top).
+frontend_parameters:
+    detection_threshold: 30.0     # (BRISK-only, ignored with xfeat.use)
+    absolute_threshold: 5.0       # (BRISK-only, ignored with xfeat.use)
+    # COSINE DISTANCE threshold (1 - cos similarity, unit descriptors, 0..2).
+    # Upstream XFeat mutual-NN uses min_cossim 0.82 (= 0.18 here); OKVIS gates
+    # matches by predicted reprojection + triangulation, so slightly looser is
+    # safe and keeps recall up with the placeholder calibration. TODO-TUNE.
+    matching_threshold: 0.25
+    octaves: 0                    # (BRISK-only, ignored with xfeat.use)
+    max_num_keypoints: 600 # strongest-N cap applied to the engine's top-2048
+    keyframe_overlap: 0.55
+    use_cnn: false
+    parallelise_detection: true
+    num_matching_threads: 3
+    xfeat:
+        use: true
+        engine: /opt/mowe/onnx/xfeat.plan               # static (1,1,800,1280) top-2048
+        lighterglue_engine: /opt/mowe/onnx/lighterglue.plan # "" -> cosine NN fallback
+        score_threshold: 0.05    # keypointness x reliability floor (upstream default)
+        keypoint_size: 16.0      # [px] nominal size; obs sigma = size/f*0.125 in matching
+        match_score_min: 0.10    # LighterGlue mutual-NN score floor (stage B)
+        motion_stereo_top_n: 1   # LighterGlue for N best-overlap motion-stereo frames (stage C)
+
+# estimator parameters
+estimator_parameters:
+    num_keyframes: 5
+    num_loop_closure_frames: 5
+    num_imu_frames: 3
+    do_loop_closures: false # BRISK DBoW vocabulary is dead with XFeat descriptors
+                            # (ADR-0040; DINOv2/FAISS place recognition planned).
+    do_final_ba: true
+    enforce_realtime: true
+    realtime_min_iterations: 3
+    realtime_max_iterations: 10
+    realtime_time_limit: 0.04 # [s] — watch this on the Orin Nano; raise if the
+                              # optimiser is starved (check OKVIS timing output).
+    realtime_num_threads: 2
+    full_graph_iterations: 15
+    full_graph_num_threads: 2
+    p_dbow: 0.4
+    drift_percentage_heuristic: 1.35
+
+# output
+output_parameters:
+    display_topview: false  # OKVIS2-X, required; top view is slow and headless on the Jetson
+    display_matches: true
+    display_overhead: false
+    enable_submapping: false # OKVIS2-X, required; VI(+GNSS) only, no supereight2 maps
+
+# GNSS (OKVIS2-X GpsErrorAsynchronous factor, research memo §2). Present so the
+# estimator registers a GPS sensor; nothing feeds measurements yet — the ROS 2
+# NavSatFix/ENU ingest is a TODO (docs/MOWE_TODO.md). Without measurements the
+# GNSS state machine stays Off and the graph is plain VIO.
+gps_parameters:
+    # data_type: ENU in a FIXED lawn datum, converted by a mow-e node (not
+    # OKVIS2-X's per-run first-fix origin). No trailing comment on this line:
+    # cv::FileStorage keeps it inside unquoted block string scalars.
+    data_type: cartesian
+    r_SA: [ 0.0, 0.0, 0.0 ]  # TODO-MEASURE ZED-F9P antenna phase centre in the
+                             # IMU (SCH16T) frame S [m]. Placeholder = at the IMU.
+    yaw_error_threshold: 1.0 # [deg] yaw sigma below which T_GW is frozen
+    robust_gps_init: false   # RTK - gate on fix type upstream; the robust mode's
+                             # hard-coded 4 m RANSAC / 3-sigma gates are SPP-tuned.

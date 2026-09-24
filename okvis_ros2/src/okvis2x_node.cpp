@@ -360,15 +360,20 @@ int main(int argc, char **argv) {
 
     // Finish up
     estimator.stopThreading();
-    while(!seInterface->finishedIntegrating());
-    seInterface->setFinished();
+    // mow-e: seInterface is only created with enable_submapping: true (or in
+    // the RealSense build with submapping); dereferencing it unconditionally
+    // segfaulted every VI-only shutdown before the trajectory CSV was written.
+    if(seInterface) {
+      while(!seInterface->finishedIntegrating());
+      seInterface->setFinished();
+    }
 
     // Write CSV
     estimator.setFinalTrajectoryCsvFile(csv_path + "/okvis2-final_trajectory.csv", false);
     estimator.writeFinalTrajectoryCsv();
 
     // Save Meshes if requested
-    if(save_meshes){
+    if(save_meshes && seInterface){
       LOG(INFO) << "Saving the submap meshes of the submapping interface";
       seInterface->saveAllSubmapMeshes();
     } else {

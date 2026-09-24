@@ -232,6 +232,16 @@ class Frontend : public ViFrontendInterface {
     keyframeInsertionOverlapThreshold_ = threshold;
   }
 
+  /// @brief Enable/configure the XFeat-on-TensorRT frontend (Mow-e, ADR-0040).
+  /// Loads the XFeat engine(s) (one per camera: detectAndDescribe runs
+  /// per-camera in parallel and a TensorRT execution context is not
+  /// thread-safe) and, when configured, the LighterGlue matcher engine.
+  /// Throws when xfeat.use is set but the build lacks USE_MOWE_XFEAT.
+  void setXFeatParameters(const XFeatParameters& xfeat);
+
+  /// @brief Whether the XFeat frontend is active (loaded engines, use=true).
+  bool usingXFeat() const;
+
   /// @}
 
   /// \brief Stop all CNN background threads.
@@ -281,7 +291,40 @@ private:
   /// @name BRISK matching parameters
   ///@{
 
-  double briskMatchingThreshold_; ///< The set BRISK matching threshold.
+  double briskMatchingThreshold_; ///< Matching threshold (Hamming; cosine distance with XFeat).
+
+  ///@}
+  /// @name XFeat frontend (Mow-e, ADR-0040)
+  ///@{
+
+  XFeatParameters xfeatParams_; ///< XFeat/LighterGlue configuration (use=false by default).
+  /// \brief Holds the per-camera XFeat engines (+ LighterGlue matcher, PIMPL —
+  ///        keeps TensorRT types out of this header; only built with
+  ///        USE_MOWE_XFEAT).
+  struct XFeatRuntime;
+  std::unique_ptr<XFeatRuntime> xfeatRuntime_;
+
+  /// \brief XFeat replacement for detect+describe: run the camera's engine on
+  ///        the frame image, threshold + cap to max keypoints, and store
+  ///        keypoints & float descriptors into the MultiFrame.
+  bool detectAndDescribeXFeat(size_t cameraIndex,
+                              std::shared_ptr<okvis::MultiFrame> frameOut);
+
+  /// \brief Bytes per keypoint descriptor: 48 (BRISK) or 256 (XFeat 64 float).
+  size_t descriptorBytes() const;
+
+  /// \brief LighterGlue pair proposals between (frameA, imA) and (frameB,
+  ///        imB): fills matchBForA[kA] = matched kB or -1. Returns false when
+  ///        LighterGlue is unavailable — caller falls back to brute-force
+  ///        descriptor distance. (ADR-0040 stage B.)
+  bool lighterGluePairProposals(const okvis::MultiFrame& frameA, size_t imA,
+                                const okvis::MultiFrame& frameB, size_t imB,
+                                std::vector<int>& matchBForA);
+
+  /// \brief Descriptor distance dispatch: BRISK Hamming popcount, or cosine
+  ///        distance (1 - dot, unit descriptors) when the XFeat frontend is
+  ///        active. matching_threshold is interpreted on the active scale.
+  double descriptorDist(const unsigned char* a, const unsigned char* b) const;
 
   ///@}
 

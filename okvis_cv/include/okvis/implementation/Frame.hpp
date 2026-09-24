@@ -259,14 +259,16 @@ bool Frame::getKeypointSize(size_t keypointIdx, double & keypointSize) const
 ///        returns nullptr if out of bounds.
 const unsigned char * Frame::keypointDescriptor(size_t keypointIdx) const
 {
+  // .step (bytes per row), NOT .cols: identical for CV_8U BRISK (48), but
+  // float descriptors (XFeat: 64 x CV_32F = 256 B) have cols != row bytes.
 #ifndef NDEBUG
   OKVIS_ASSERT_TRUE(
       Exception,
       keypointIdx < keypoints_.size(),
       "keypointIdx " << keypointIdx << "out of range: keypoints has size "<< keypoints_.size())
-  return descriptors_.data + size_t(descriptors_.cols) * keypointIdx;
+  return descriptors_.data + size_t(descriptors_.step) * keypointIdx;
 #else
-  return descriptors_.data + size_t(descriptors_.cols) * keypointIdx;
+  return descriptors_.data + size_t(descriptors_.step) * keypointIdx;
 #endif
 }
 

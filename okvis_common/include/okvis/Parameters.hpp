@@ -21,6 +21,7 @@
 #define INCLUDE_OKVIS_PARAMETERS_HPP_
 
 #include <set>
+#include <string>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 #include <opencv2/core.hpp>
@@ -105,18 +106,38 @@ struct ImuParameters{
 };
 
 /**
+ * @brief XFeat-on-TensorRT frontend parameters (Mow-e, ADR-0040). When
+ *        `use` is set, detection/description runs XFeat instead of BRISK and
+ *        descriptor matching switches to the float (cosine) metric; then
+ *        `FrontendParameters::matching_threshold` is interpreted as a cosine
+ *        DISTANCE (1 - cos similarity, unit descriptors: 0..2) instead of a
+ *        BRISK Hamming distance, and the BRISK detection thresholds/octaves
+ *        are ignored. Requires a build with USE_MOWE_XFEAT=ON.
+ */
+struct XFeatParameters {
+  bool use = false; ///< Run the XFeat TensorRT frontend instead of BRISK.
+  std::string engine; ///< Path to the XFeat .plan (static mono engine).
+  std::string lighterglue_engine; ///< Path to the LighterGlue .plan ("" = cosine NN only).
+  double score_threshold = 0.05; ///< Keypointness x reliability floor (upstream default).
+  double keypoint_size = 16.0; ///< Nominal keypoint size [px]; sets obs. sigma = size/f*0.125.
+  double match_score_min = 0.10; ///< Min LighterGlue mutual-NN score to accept a match.
+  int motion_stereo_top_n = 1; ///< Use LighterGlue for this many best-overlap motion-stereo frames.
+};
+
+/**
  * @brief Parameters for detection etc.
  */
 struct FrontendParameters {
   double detection_threshold; ///< Detection threshold. By default the uniformity radius in pixels.
   double absolute_threshold; ///< Absolute Harris corner threshold (noise floor).
-  double matching_threshold; ///< BRISK descriptor matching threshold.
+  double matching_threshold; ///< Descriptor matching threshold (BRISK Hamming; cosine distance with xfeat.use).
   int octaves; ///< Number of octaves for detection. 0 means single-scale at highest resolution.
   int max_num_keypoints; ///< Restrict to a maximum of this many keypoints per img (strongest ones).
   double keyframe_overlap; ///< Minimum field-of-view overlap.
   bool use_cnn; ///< Use the CNN (if available) to filter out dynamic content / sky.
   bool parallelise_detection; ///< Run parallel detect & describe.
   int num_matching_threads; ///< Parallelise matching with this number of threads.
+  XFeatParameters xfeat; ///< XFeat/LighterGlue frontend (Mow-e ADR-0040); off by default.
 };
 
 /**

@@ -66,17 +66,33 @@ void Subscriber::setNodeHandle(std::shared_ptr<rclcpp::Node> node,
     imgTransport_.reset();
   imgTransport_ = std::make_shared<image_transport::ImageTransport>(node_);
 
-  // set up callbacks
+  // Mow-e sensor sources (mowe_camera, sch16t_imu_node) publish with
+  // rclcpp::SensorDataQoS() -> BEST_EFFORT reliability. A default (RELIABLE)
+  // subscriber is QoS-incompatible with a best-effort publisher and receives
+  // NOTHING. Subscribe best-effort so we connect to the real sensors (a
+  // best-effort sub also still accepts a reliable publisher, e.g. a rosbag).
+  rmw_qos_profile_t image_qos = rmw_qos_profile_sensor_data; // BEST_EFFORT
+  image_qos.depth = 30 * parameters_.nCameraSystem.numCameras();
+
+  // set up callbacks. Use the free create_subscription() rather than
+  // ImageTransport::subscribe(): in Humble the rmw_qos_profile_t subscribe()
+  // overloads only accept a member-function POINTER, not a std::bind/Callback,
+  // so a QoS + bound callback won't compile through the member API. The free
+  // function takes a Callback AND a custom QoS.
+  // MOWE-PORT-REVIEW: re-applied by hand over OKVIS2-X's extra isColour bind
+  // argument; not compiled in the porting environment (no ROS 2 headers).
   for (size_t i = 0; i < parameters_.nCameraSystem.numCameras(); ++i) {
-    imageSubscribers_[i] = imgTransport_->subscribe(
-        "/okvis/cam" + std::to_string(i) +"/image_raw",
-        30 * parameters_.nCameraSystem.numCameras(),
+    imageSubscribers_[i] = image_transport::create_subscription(
+        node_.get(),
+        "/okvis/cam" + std::to_string(i) + "/image_raw",
         std::bind(&Subscriber::imageCallback, this, std::placeholders::_1, i,
-          parameters_.nCameraSystem.cameraType(i).isColour));
+          parameters_.nCameraSystem.cameraType(i).isColour),
+        "raw",
+        image_qos);
   }
 
   subImu_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-      "/okvis/imu0", 1000, 
+      "/okvis/imu0", rclcpp::SensorDataQoS().keep_last(1000),
       std::bind(&Subscriber::imuCallback, this, std::placeholders::_1));
 
   if(isDepthCamera){

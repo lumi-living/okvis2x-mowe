@@ -25,6 +25,7 @@
   <depend>cv_bridge</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>lifecycle_msgs</depend> <!-- mow-e: okvis2x_node_mowe (USE_MOWE_XFEAT) -->
   <depend>sensor_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>language_feature_msgs</depend>

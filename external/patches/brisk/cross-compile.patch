@@ -1,0 +1,11 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -60,7 +60,7 @@
+ target_link_libraries(brisk PUBLIC ${OpenCV_LIBS} brisk::agast)
+ target_compile_options(brisk PRIVATE ${BRISK_PRIVATE_CXX_FLAGS})
+ # Enable vector instructions.
+-if(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "arm*")
++if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm*")
+   message(STATUS "ARM processor detected, will attempt to use NEON.")
+   target_compile_definitions(brisk PUBLIC -D__ARM_NEON__)
+   target_compile_options(brisk PUBLIC -flax-vector-conversions)

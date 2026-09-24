@@ -25,7 +25,7 @@ model (Cityscapes sky/person classes — see `okvis_apps/src/nn_test.cpp`) used 
 Opt-in from the top-level OKVIS build:
 
 ```bash
-cmake -S okvis2-mowe -B build -DUSE_MOWE_XFEAT=ON \
+cmake -C okvis2x-mowe/cmake/mowe-defaults.cmake -S okvis2x-mowe -B build -DUSE_MOWE_XFEAT=ON \
       -Dmowe_camera_core_DIR=<prefix>/lib/cmake/mowe_camera_core
 # real inference path (on the Jetson):
 #   -DUSE_TENSORRT=ON   (in the submodule; needs CUDA 12.5 + TensorRT 10.3)
@@ -34,7 +34,7 @@ cmake -S okvis2-mowe -B build -DUSE_MOWE_XFEAT=ON \
 Or standalone:
 
 ```bash
-cmake -S okvis2-mowe/okvis_xfeat_frontend -B build \
+cmake -S okvis2x-mowe/okvis_xfeat_frontend -B build \
       -DCMAKE_PREFIX_PATH=<mowe_camera_core install prefix>
 ```
 
@@ -64,7 +64,7 @@ end-to-end but emits empty features (useful for wiring/timing the capture path).
 
 `okvis::Frontend` (built with `USE_MOWE_XFEAT`, enabled via
 `frontend_parameters.xfeat` in the OKVIS yaml — see
-`config/ov9281_sch16t_xfeat.yaml`):
+`config/mowe/okvis2-xfeat.yaml`):
 
 1. **Detect/describe** — `detectAndDescribeXFeat` runs one engine per camera
    (TRT contexts are not thread-safe) and stores keypoints + CV_32F 64-D

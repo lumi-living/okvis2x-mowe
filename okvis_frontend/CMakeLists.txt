@@ -73,6 +73,13 @@ if(USE_NN)
     target_compile_definitions(${LIB_NAME} PUBLIC OKVIS_USE_GPU)
   endif()
 endif()
+if(USE_MOWE_XFEAT)
+  # Mow-e XFeat/LighterGlue frontend (ADR-0040): Frontend.cpp branches
+  # detect/describe + descriptor matching onto TensorRT XFeat when
+  # frontend_parameters.xfeat.use is set.
+  target_compile_definitions(${LIB_NAME} PRIVATE OKVIS_USE_MOWE_XFEAT)
+  target_link_libraries(${LIB_NAME} PRIVATE okvis::XFeatFrontend)
+endif()
 add_library(okvis::Frontend ALIAS ${LIB_NAME})
 
 # the DBoW2 pre-built vocabulary

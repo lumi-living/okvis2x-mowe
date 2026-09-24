@@ -27,6 +27,13 @@ option (BUILD_SHARED_LIBS
 
 option (USE_COLIDMAP "Whether to build okvis supportin colour and object's id 'for language based OKVIS' or regular one" ON)
 
+# mow-e (okvis2x-mowe). Upstream option defaults above are left untouched; the
+# mow-e build values (USE_NN=OFF, USE_COLIDMAP=OFF, HAVE_LIBREALSENSE=OFF, ...)
+# are preloaded with `cmake -C cmake/mowe-defaults.cmake` -- see
+# README_mowe_bringup.md.
+option (USE_MOWE_XFEAT
+        "Build the Mow-e XFeat feature frontend bridge (needs mowe_camera_core; CUDA+TensorRT for the real inference path)" OFF)
+
 set(OKVIS_CXX_STANDARD 17)
 set(OKVIS_PUBLIC_CXX_FLAGS)
 if(APPLE)
@@ -234,6 +241,15 @@ add_subdirectory(okvis_cv)
 add_subdirectory(okvis_common)
 add_subdirectory(okvis_timing)
 add_subdirectory(okvis_ceres)
+
+# Mow-e XFeat frontend bridge (camera -> CUDA -> TensorRT XFeat -> features).
+# Opt-in: pulls in mowe_camera_core via find_package; the real inference path
+# additionally needs CUDA + TensorRT (its own USE_TENSORRT option). Must come
+# BEFORE okvis_frontend, which links it (ADR-0040).
+if(USE_MOWE_XFEAT)
+  add_subdirectory(okvis_xfeat_frontend)
+endif()
+
 add_subdirectory(okvis_frontend)
 add_subdirectory(okvis_mapping)
 add_subdirectory(okvis_multisensor_processing)

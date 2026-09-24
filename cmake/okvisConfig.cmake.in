@@ -18,6 +18,11 @@ endif()
 if(@USE_NN@)
   find_dependency(Torch)
 endif()
+if(@USE_MOWE_XFEAT@)
+  # Mow-e XFeat frontend (ADR-0040): okvis::Frontend privately links
+  # okvis_xfeat_frontend, which links mowe_camera::core.
+  find_dependency(mowe_camera_core)
+endif()
 
 get_filename_component(DIRNAME "${CMAKE_CURRENT_LIST_FILE}" PATH)
 include("${DIRNAME}/okvisTargets.cmake")

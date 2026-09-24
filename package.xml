@@ -28,7 +28,11 @@
   <depend>lifecycle_msgs</depend> <!-- mow-e: okvis2x_node_mowe (USE_MOWE_XFEAT) -->
   <depend>sensor_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>language_feature_msgs</depend>
+  <!-- mow-e: only needed with USE_NN=ON (okvis2x_network_node). Not in any ROS
+       distro - standalone repo ethz-mrl/language_feature_msgs. Declaring it
+       unconditionally makes rosdep/colcon demand a package the mow-e profile
+       (USE_NN=OFF) never builds against. Re-add if USE_NN is turned on. -->
+  <!-- <depend>language_feature_msgs</depend> -->
   <depend>nav_msgs</depend>
   <depend>pcl_conversions</depend>
   <depend>message_filters</depend>

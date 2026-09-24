@@ -485,7 +485,16 @@ if(BUILD_ROS2)
   find_package(cv_bridge REQUIRED)
   find_package(std_srvs REQUIRED)
   find_package(std_msgs REQUIRED)
-  find_package(language_feature_msgs REQUIRED)
+  # mow-e: language_feature_msgs is only consumed by okvis2x_network_node.cpp,
+  # which is built solely under USE_NN (and the language variant additionally
+  # under USE_COLIDMAP). Requiring it unconditionally makes a USE_NN=OFF build
+  # fail to configure on a package it will never compile against. It is not in
+  # any ROS distro -- it is a standalone repo (ethz-mrl/language_feature_msgs,
+  # the FindAnything msg definitions) -- so an unconditional REQUIRED forces
+  # every downstream build to vendor it. Upstream-PR candidate.
+  if(USE_NN)
+    find_package(language_feature_msgs REQUIRED)
+  endif()
   find_package(sensor_msgs REQUIRED)
   find_package(visualization_msgs REQUIRED)
   find_package(nav_msgs REQUIRED)
@@ -575,7 +584,6 @@ if(BUILD_ROS2)
     Eigen3
     sensor_msgs
     visualization_msgs
-    language_feature_msgs
     std_srvs
     nav_msgs
     pcl_conversions
@@ -587,6 +595,13 @@ if(BUILD_ROS2)
     tf2_eigen
     tf2_geometry_msgs
   )
+  # mow-e: see the find_package note above. okvis::Ros2's own sources
+  # (Subscriber/RosbagReader/Publisher/RePublisher) never include
+  # language_feature_msgs; only okvis2x_network_node.cpp does, and that is a
+  # separate executable gated on USE_NN.
+  if(USE_NN)
+    ament_target_dependencies(${LIB_NAME} language_feature_msgs)
+  endif()
 
   # export dependencies
   ament_export_dependencies(

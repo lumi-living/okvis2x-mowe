@@ -47,6 +47,15 @@ find_package(LAPACK REQUIRED)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "/usr/share/cmake/geographiclib")
+# mow-e: CMAKE_MODULE_PATH is not re-rooted under CMAKE_SYSROOT, so the cross build needs the
+# sysroot copy of FindGeographicLib.cmake as well (mowe-nav-kb 11, ADR-0042 item 1).
+if(CMAKE_SYSROOT)
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_SYSROOT}/usr/share/cmake/geographiclib")
+endif()
+# mow-e: PCL's config probes VTK even for common+io (optional dep), and VTK's config then
+# requires Qt5, whose Ubuntu config asserts on /usr/bin/aarch64-linux-gnu-qmake — a host tool a
+# cross sysroot does not carry. OKVIS never uses VTK, so refuse it up front (T-0002).
+set(CMAKE_DISABLE_FIND_PACKAGE_VTK TRUE)
 
 # Make sure we use Release and warn otherwise
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

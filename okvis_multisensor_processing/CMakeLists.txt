@@ -4,7 +4,10 @@ find_package(Boost REQUIRED COMPONENTS filesystem)
 find_package(Eigen3 REQUIRED)
 find_package(Glog REQUIRED)
 find_package(OpenCV REQUIRED core imgcodecs imgproc highgui calib3d)
-find_package(PCL REQUIRED)
+# mow-e: only common+io are used (point_types.h, ply_io.h). The default all-components lookup
+# drags in pcl_visualization -> VTK -> Qt5, whose config asserts on the qmake binary, which a
+# cross sysroot has no reason to carry (T-0002).
+find_package(PCL REQUIRED COMPONENTS common io)
 
 # Generate the configured header file
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/okvisConfig.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/include/okvis/okvisConfig.hpp" @ONLY)

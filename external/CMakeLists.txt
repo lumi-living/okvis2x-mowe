@@ -32,7 +32,9 @@ if(NOT USE_SYSTEM_BRISK)
     if(_mowe_brisk_sha256 STREQUAL _mowe_brisk_upstream_sha256)
       copy_if_exists(${CMAKE_CURRENT_SOURCE_DIR}/patches/brisk/CMakeLists.txt ${_mowe_brisk_cml})
       message(STATUS "mow-e: applied BRISK cross-compile patch (CMAKE_SYSTEM_PROCESSOR)")
-    elseif(NOT _mowe_brisk_sha256 STREQUAL _mowe_brisk_patched_sha256)
+    elseif(_mowe_brisk_sha256 STREQUAL _mowe_brisk_patched_sha256)
+      message(STATUS "mow-e: BRISK cross-compile patch already patched (CMAKE_SYSTEM_PROCESSOR)")
+    else()
       message(FATAL_ERROR "external/brisk/CMakeLists.txt is neither the pinned "
         "upstream file (brisk 1ef8b42) nor the mow-e patched copy. The brisk "
         "submodule was probably moved: regenerate external/patches/brisk/ "

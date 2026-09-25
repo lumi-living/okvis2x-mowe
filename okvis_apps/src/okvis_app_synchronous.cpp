@@ -52,16 +52,17 @@ int main(int argc, char **argv)
   FLAGS_colorlogtostderr = 1;
   FLAGS_minloglevel = 0;
 
-  if (argc != 4 && argc != 5) {
+  // mowe: argc == 3 (config + dataset only) is accepted and saves to the
+  // current directory, so the overnight verify can `cd out/<ticket> && run` (T-0107).
+  if (argc < 3 || argc > 5) {
     LOG(ERROR)<<
-    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [-rpg]";
+    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [save-folder] [-rpg]";
     return EXIT_FAILURE;
   }
 
   okvis::Duration deltaT(0.0);
   bool rpg = false;
-  std::string savePath;
-  savePath = std::string(argv[2]);
+  std::string savePath = ".";
   if (argc == 5) {
     savePath = std::string(argv[3]);
     if(strcmp(argv[4], "-rpg")==0) {
@@ -95,11 +96,16 @@ int main(int argc, char **argv)
   }
 
   // also check DBoW2 vocabulary
-  boost::filesystem::path executable(argv[0]);
+  // mowe: resolve the real binary location (argv[0] is bare when found via PATH)
+  // and fall back to the colcon install layout <prefix>/share/okvis/resources (T-0107).
+  boost::filesystem::path executable = boost::filesystem::canonical("/proc/self/exe");
   std::string dBowVocDir = executable.remove_filename().string();
+  if(!std::ifstream(dBowVocDir+"/small_voc.yml.gz").good()) {
+    dBowVocDir = dBowVocDir + "/../share/okvis/resources";
+  }
   std::ifstream infile(dBowVocDir+"/small_voc.yml.gz");
   if(!infile.good()) {
-     LOG(ERROR)<<"DBoW2 vocaublary " << dBowVocDir << "/small_voc.yml.gz not found.";
+     LOG(ERROR)<<"DBoW2 vocabulary " << dBowVocDir << "/small_voc.yml.gz not found.";
      return EXIT_FAILURE;
   }
 

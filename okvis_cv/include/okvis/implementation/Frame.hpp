@@ -357,6 +357,10 @@ inline bool Frame::resetDescriptors(const cv::Mat & descriptors) {
   return true;
 }
 
+inline const cv::Mat & Frame::descriptors() const {
+  return descriptors_;
+}
+
 /// release memory of image
 void Frame::clearImage() {
   if (!image_.empty()) {

@@ -26,6 +26,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>lifecycle_msgs</depend> <!-- mow-e: okvis2x_node_mowe (USE_MOWE_XFEAT) -->
+  <depend>mowe_camera</depend> <!-- mow-e: okvis_xfeat_frontend links mowe_camera_core (USE_MOWE_XFEAT); orders the colcon build -->
   <depend>sensor_msgs</depend>
   <depend>visualization_msgs</depend>
   <!-- mow-e: only needed with USE_NN=ON (okvis2x_network_node). Not in any ROS

@@ -242,6 +242,30 @@ class Frontend : public ViFrontendInterface {
   /// @brief Whether the XFeat frontend is active (loaded engines, use=true).
   bool usingXFeat() const;
 
+  /// @brief Select the descriptor metric (Mow-e T-0112, functor seam): false =
+  ///        BRISK 48-byte rows / Hamming, true = 64-D unit-norm float rows /
+  ///        cosine distance. setXFeatParameters() sets this from xfeat.use;
+  ///        exposed so descriptors injected by other means (tests, replay) can
+  ///        use the float path without a TensorRT engine. Also gates every
+  ///        DBoW2 path (BRISK vocabulary, unusable with float descriptors).
+  void setFloatDescriptors(bool floatDescriptors) {
+    floatDescriptors_ = floatDescriptors;
+  }
+
+  /// @brief Whether the float/cosine descriptor path is selected.
+  bool floatDescriptors() const {
+    return floatDescriptors_;
+  }
+
+  /// \brief Bytes per keypoint descriptor: 48 (BRISK) or 256 (XFeat 64 float).
+  size_t descriptorBytes() const;
+
+  /// \brief Descriptor distance dispatch (okvis/DescriptorDistance.hpp): BRISK
+  ///        Hamming popcount, or cosine distance (1 - dot, unit descriptors)
+  ///        when floatDescriptors() is set. matching_threshold is interpreted
+  ///        on the active scale.
+  double descriptorDist(const unsigned char* a, const unsigned char* b) const;
+
   /// @}
 
   /// \brief Stop all CNN background threads.
@@ -310,9 +334,6 @@ private:
   bool detectAndDescribeXFeat(size_t cameraIndex,
                               std::shared_ptr<okvis::MultiFrame> frameOut);
 
-  /// \brief Bytes per keypoint descriptor: 48 (BRISK) or 256 (XFeat 64 float).
-  size_t descriptorBytes() const;
-
   /// \brief LighterGlue pair proposals between (frameA, imA) and (frameB,
   ///        imB): fills matchBForA[kA] = matched kB or -1. Returns false when
   ///        LighterGlue is unavailable — caller falls back to brute-force
@@ -321,10 +342,7 @@ private:
                                 const okvis::MultiFrame& frameB, size_t imB,
                                 std::vector<int>& matchBForA);
 
-  /// \brief Descriptor distance dispatch: BRISK Hamming popcount, or cosine
-  ///        distance (1 - dot, unit descriptors) when the XFeat frontend is
-  ///        active. matching_threshold is interpreted on the active scale.
-  double descriptorDist(const unsigned char* a, const unsigned char* b) const;
+  bool floatDescriptors_ = false; ///< Descriptor metric: float/cosine (true) or BRISK/Hamming.
 
   ///@}
 
@@ -381,7 +399,11 @@ private:
   /// \brief DBoW for loop closure
   /// https://en.cppreference.com/w/cpp/language/pimpl
   class DBoW;
-  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
+  std::string dBowVocDir_; ///< Vocabulary directory; loaded lazily by dBow().
+  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL); null until first BRISK use.
+  /// \brief Lazily load the BRISK DBoW2 vocabulary (T-0112): never touched on
+  ///        the float-descriptor path, so XFeat runs need no small_voc.yml.gz.
+  DBoW& dBow();
 
   /**
    * @brief Get filtered DBoW query.

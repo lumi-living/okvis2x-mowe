@@ -273,6 +273,9 @@ class MultiFrame
   /// \return whether or not the operation was successful.
   inline bool resetDescriptors(size_t cameraIdx, const cv::Mat & descriptors);
 
+  /// \brief Access a camera's descriptor matrix (see Frame::descriptors).
+  inline const cv::Mat & descriptors(size_t cameraIdx) const;
+
   /// \brief Release memory of all images
   inline void clearAllImages();
 

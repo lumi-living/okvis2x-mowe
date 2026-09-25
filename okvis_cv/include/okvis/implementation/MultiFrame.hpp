@@ -299,6 +299,12 @@ bool MultiFrame::resetDescriptors(size_t cameraIdx, const cv::Mat & descriptors)
   return frames_[cameraIdx].resetDescriptors(descriptors);
 }
 
+const cv::Mat & MultiFrame::descriptors(size_t cameraIdx) const
+{
+  OKVIS_ASSERT_TRUE_DBG(Exception, cameraIdx < frames_.size(), "Out of range")
+  return frames_[cameraIdx].descriptors();
+}
+
 /// release memory of all images
 void MultiFrame::clearAllImages() {
   for (auto& f : frames_) {

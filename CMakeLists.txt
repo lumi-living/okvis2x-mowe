@@ -33,6 +33,13 @@ option (USE_COLIDMAP "Whether to build okvis supportin colour and object's id 'f
 # README_mowe_bringup.md.
 option (USE_MOWE_XFEAT
         "Build the Mow-e XFeat feature frontend bridge (needs mowe_camera_core; CUDA+TensorRT for the real inference path)" OFF)
+# T-0112: derived marker for the 64-D float / cosine descriptor seam
+# (okvis_frontend/include/okvis/DescriptorDistance.hpp). The seam itself is a
+# runtime switch (Frontend::setFloatDescriptors) and compiles in every build;
+# this cache entry records that the XFeat build selects it, for the runner's
+# `grep MOWE_DESCRIPTOR_FLOAT CMakeCache.txt` gate.
+set(MOWE_DESCRIPTOR_FLOAT ${USE_MOWE_XFEAT} CACHE BOOL
+    "Float 64-D descriptor / cosine matching seam selected by USE_MOWE_XFEAT (derived)" FORCE)
 
 set(OKVIS_CXX_STANDARD 17)
 set(OKVIS_PUBLIC_CXX_FLAGS)

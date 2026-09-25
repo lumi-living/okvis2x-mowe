@@ -151,15 +151,20 @@ int main(int argc, char **argv) {
   okvis::Publisher publisher(node, threadedOdometryPublisher,
                              threadedImagePublisher, threadedPublisher);
 
-  // DBoW2 vocabulary (the frontend loads it even when loop closures are off).
+  // DBoW2 vocabulary. BRISK only: with xfeat.use the frontend never loads it
+  // (float descriptors, lazy DBoW — T-0112), so its absence is not an error.
   boost::filesystem::path executable(argv[0]);
   const std::string dBowVocDir =
       executable.remove_filename().string() + "/../../share/okvis/resources/";
   std::ifstream infile(dBowVocDir + "/small_voc.yml.gz");
   if (!infile.good()) {
-    LOG(ERROR) << "DBoW2 vocabulary " << dBowVocDir
-               << "/small_voc.yml.gz not found.";
-    return EXIT_FAILURE;
+    if (!parameters.frontend.xfeat.use) {
+      LOG(ERROR) << "DBoW2 vocabulary " << dBowVocDir
+                 << "/small_voc.yml.gz not found.";
+      return EXIT_FAILURE;
+    }
+    LOG(INFO) << "DBoW2 vocabulary not found at " << dBowVocDir
+              << " — not needed with xfeat.use (float descriptors)";
   }
 
   // Default se::SubMapConfig: unused with enable_submapping == false.

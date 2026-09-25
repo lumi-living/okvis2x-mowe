@@ -432,6 +432,9 @@ bool Component::save(const std::string &path)
         file << "FRAME:KEYPOINT " << id.value() << " " << i << " " << cvKeypoint.pt.x << " ";
         file << cvKeypoint.pt.y << " " << cvKeypoint.size << " BRISK2 ";
         const unsigned char *descriptor = multiFrames_.at(id)->keypointDescriptor(i, k);
+        // T-0112: the save format is BRISK2 (48 B hex); float rows would be truncated.
+        OKVIS_ASSERT_TRUE(Exception, multiFrames_.at(id)->descriptors(i).step == 48,
+                          "Component::save: only 48-byte BRISK descriptors are supported")
         for (size_t i = 0; i < 48; ++i) {
           file << std::setfill('0') << std::setw(2) << std::hex << uint32_t(descriptor[i]);
         }

@@ -220,6 +220,10 @@ class Frame
   /// \return whether or not the operation was successful.
   inline bool resetDescriptors(const cv::Mat & descriptors);
 
+  /// \brief Access the descriptor matrix (one row per keypoint; CV_8UC1 48 B
+  ///        for BRISK, CV_32FC1 64-D for XFeat — row bytes are .step, T-0112).
+  inline const cv::Mat & descriptors() const;
+
   /// \brief Release memory of image
   inline void clearImage();
 

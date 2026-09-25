@@ -2232,6 +2232,10 @@ bool ViSlamBackend::saveMap(std::string path)
         const unsigned char* descriptor =
             multiFrames_.at(state.first)->keypointDescriptor(
               obs.first.cameraIndex, obs.first.keypointIndex);
+        // T-0112: saveMap writes 48-byte BRISK hex; refuse float rows instead of truncating.
+        OKVIS_ASSERT_TRUE(Exception,
+            multiFrames_.at(state.first)->descriptors(obs.first.cameraIndex).step == 48,
+            "saveMap: only 48-byte BRISK descriptors are supported")
         for(size_t i=0; i<48; ++i) {
           file << std::setfill('0') << std::setw(2) << std::hex << uint32_t(descriptor[i]);
         }

@@ -82,6 +82,17 @@ if(USE_MOWE_XFEAT)
 endif()
 add_library(okvis::Frontend ALIAS ${LIB_NAME})
 
+# T-0112: float 64-D / cosine descriptor seam + BRISK/Hamming regression gtest.
+# Pure CPU (no TensorRT) — runs under qemu-aarch64 and on the device; installed
+# beside the other mow-e gtests (lib/okvis/test_*) for tools/agent/test-*.sh.
+if(BUILD_TESTS)
+  add_executable(test_float_matching test/test_float_matching.cpp)
+  target_link_libraries(test_float_matching ${LIB_NAME} gtest gtest_main pthread)
+  target_compile_options(test_float_matching PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+  add_test(NAME test_float_matching COMMAND test_float_matching)
+  install(TARGETS test_float_matching DESTINATION lib/${PROJECT_NAME})
+endif()
+
 # the DBoW2 pre-built vocabulary
 add_custom_command(TARGET ${LIB_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy

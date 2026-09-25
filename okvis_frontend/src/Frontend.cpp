@@ -56,6 +56,7 @@
 #pragma GCC diagnostic pop
 
 #include <okvis/Frontend.hpp>
+#include <okvis/DescriptorDistance.hpp>
 
 #include <numeric>
 
@@ -136,7 +137,7 @@ Frontend::Frontend(size_t numCameras, std::string dBowVocDir)
       briskDescriptionScaleInvariance_(false),
       briskMatchingThreshold_(60.0),
       keyframeInsertionOverlapThreshold_(0.55f),
-      dBow_(new DBoW(dBowVocDir))
+      dBowVocDir_(dBowVocDir)
 {
   // create mutexes for feature detectors and descriptor extractors
   for (size_t i = 0; i < numCameras_; ++i) {
@@ -186,6 +187,7 @@ struct Frontend::XFeatRuntime {
 
 void Frontend::setXFeatParameters(const XFeatParameters& xfeat) {
   xfeatParams_ = xfeat;
+  floatDescriptors_ = xfeat.use;  // XFeat -> 64-D float rows, cosine metric
   if (!xfeat.use) {
     xfeatRuntime_.reset();
     return;
@@ -235,26 +237,28 @@ bool Frontend::usingXFeat() const {
   return xfeatParams_.use && xfeatRuntime_ != nullptr;
 }
 
-// XFeat descriptors are 64-D float (okvis::xfeat::kDescriptorDim); constant
-// kept local so non-USE_MOWE_XFEAT builds compile the dispatch below too.
-static constexpr int kXFeatDescriptorDim = 64;
+// Descriptor metric seam (okvis/DescriptorDistance.hpp, T-0112): the matching
+// loops below work on raw rows and dispatch here; matching_threshold is
+// interpreted on the active scale (Hamming bits, or cosine distance, ADR-0040).
+static constexpr int kXFeatDescriptorDim = kFloatDescriptorDim;
 
 size_t Frontend::descriptorBytes() const {
-  return usingXFeat() ? sizeof(float) * kXFeatDescriptorDim : 48u;
+  return DescriptorMetric{floatDescriptors_}.bytes();
 }
 
 double Frontend::descriptorDist(const unsigned char* a,
                                 const unsigned char* b) const {
-  if (!usingXFeat()) {
-    return double(brisk::Hamming::PopcntofXORed(a, b, 3));  // 3 x 128 bit.
+  return DescriptorMetric{floatDescriptors_}(a, b);
+}
+
+Frontend::DBoW& Frontend::dBow() {
+  OKVIS_ASSERT_TRUE(Exception, !floatDescriptors_,
+                    "DBoW2 requested on the float-descriptor path: the "
+                    "vocabulary is BRISK-trained (ADR-0040, T-0112)")
+  if (!dBow_) {
+    dBow_.reset(new DBoW(dBowVocDir_));
   }
-  // XFeat: L2-normalised float descriptors -> cosine distance 1 - <a,b>, range
-  // [0, 2]. matching_threshold is interpreted on this scale (ADR-0040).
-  const Eigen::Map<const Eigen::Matrix<float, kXFeatDescriptorDim, 1>> fa(
-      reinterpret_cast<const float*>(a));
-  const Eigen::Map<const Eigen::Matrix<float, kXFeatDescriptorDim, 1>> fb(
-      reinterpret_cast<const float*>(b));
-  return 1.0 - double(fa.dot(fb));
+  return *dBow_;
 }
 
 bool Frontend::detectAndDescribeXFeat(
@@ -374,7 +378,7 @@ bool Frontend::loadComponent(std::string filename,
                              const cameras::NCameraSystem &nCameraSystem,
                              bool componentFixed)
 {
-  OKVIS_ASSERT_TRUE(Exception, !usingXFeat(),
+  OKVIS_ASSERT_TRUE(Exception, !floatDescriptors(),
                     "loadComponent: saved components store BRISK descriptors "
                     "and a BRISK DBoW vocabulary; not usable with the XFeat "
                     "frontend (ADR-0040)")
@@ -389,7 +393,7 @@ bool Frontend::loadComponent(std::string filename,
   }
 
   // create component DBoW
-  componentDBows_.emplace_back(std::unique_ptr<DBoW>(new DBoW(dBow_->vocabulary)));
+  componentDBows_.emplace_back(std::unique_ptr<DBoW>(new DBoW(dBow().vocabulary)));
 
   // fill component DBoW
   for (const auto &multiFrame : components_.back().multiFrames_) {
@@ -611,7 +615,7 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
 
   // check distinciveness of survived matches (BRISK bit statistics — skipped
   // with float descriptors; unreachable there anyway, the DBoW paths are off)
-  if (!usingXFeat()) {
+  if (!floatDescriptors()) {
   float sum = 0.0;
   for (size_t im = 0; im < numCameras_; ++im) {
     Eigen::Matrix<float, Eigen::Dynamic, 48 * 8> descriptorMatrix(ransac.inliers_.size(), 48 * 8);
@@ -1017,7 +1021,14 @@ bool Frontend::dataAssociationAndInitialization(
   // frontend all DBoW paths (multi-session + loop closure) stay off (ADR-0040;
   // DINOv2/FAISS place recognition is the planned replacement).
   std::vector<std::vector<uchar>> features;
-  if (!usingXFeat()) {
+  if (floatDescriptors()) {
+    // T-0112: place recognition returns no candidates on the float path; say so once.
+    static std::once_flag logged;
+    std::call_once(logged, [] {
+      LOG(WARNING) << "float descriptors: DBoW2 place recognition / loop closure "
+                      "disabled (BRISK vocabulary not applicable, ADR-0040)";
+    });
+  } else {
     features.resize(framesInOut->numKeypoints());
     // first, we are trying to match the database for loop closures
     int offset = 0;
@@ -1033,7 +1044,7 @@ bool Frontend::dataAssociationAndInitialization(
   }
 
   /*MULTI-SESSION AND MULTI-AGENT*/
-  if (!usingXFeat() && !estimator.isLoopClosing() && !estimator.isLoopClosureAvailable()
+  if (!floatDescriptors() && !estimator.isLoopClosing() && !estimator.isLoopClosureAvailable()
       && !estimator.needsFullGraphOptimisation() && isInitialized_) {
     for (uint64_t c = 0; c < componentDBows_.size(); ++c) {
       TimerSwitchable matchDBoWTimer0("2.3.0 multi-session and multi-agent place recognition");
@@ -1078,11 +1089,12 @@ bool Frontend::dataAssociationAndInitialization(
   }
 
   /*LOOP CLOSURES*/
-  if(!usingXFeat() && params.estimator.do_loop_closures && !estimator.isLoopClosing()
+  if(!floatDescriptors() && params.estimator.do_loop_closures && !estimator.isLoopClosing()
       && !estimator.isLoopClosureAvailable()
       && !estimator.needsFullGraphOptimisation() && isInitialized_) {
     TimerSwitchable matchDBoWTimer("2.03 loop closure query");
     std::vector<std::pair<StateId, double>> stateIds;
+    dBow();  // ensure the BRISK vocabulary is loaded (lazy, T-0112)
     getFilteredDBoWResult(dBow_, features, stateIds);
     matchDBoWTimer.stop();
     TimerSwitchable attemptLoopClosureTimer("2.07 attempt loop closure", true);
@@ -1092,7 +1104,7 @@ bool Frontend::dataAssociationAndInitialization(
       // start with oldest keyframe match
       const double p = id.second;
       // get old multiframe
-      if(attempts > std::max(size_t(10),dBow_->poseIds.size()/20)) break;
+      if(attempts > std::max(size_t(10),dBow().poseIds.size()/20)) break;
       if(p > params.estimator.p_dbow) {
 
         const std::shared_ptr<const MultiFrame> oldFrame = estimator.multiFrame(id.first);
@@ -1187,8 +1199,8 @@ bool Frontend::dataAssociationAndInitialization(
     }
     // if keyframe, we add to relocalisation database
     if(*asKeyframe && !kfPrior) {
-      dBow_->database.add(features);
-      dBow_->poseIds.push_back(framesInOut->id());
+      dBow().database.add(features);
+      dBow().poseIds.push_back(framesInOut->id());
     }
   }
 
@@ -1395,8 +1407,10 @@ void Frontend::clear()
 {
   endCnnThreads();
   isInitialized_ = false;        // Is the pose initialised?
-  dBow_->database.clear();
-  dBow_->poseIds.clear(); // Store the multiframe IDs corresponsind to the dBow ones
+  if (dBow_) {
+    dBow_->database.clear();
+    dBow_->poseIds.clear(); // Store the multiframe IDs corresponsind to the dBow ones
+  }
   trackingLost_ = false; // Is the tracking currently lost?
 }
 

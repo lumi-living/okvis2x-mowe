@@ -396,6 +396,11 @@ void Frontend::vprQuery(const Estimator& estimator, const okvis::ViParameters& p
         break;
       }
       ++loopStats_.loopsAcceptedAgainstForeignMap;
+      loopStats_.foreignLoops.push_back(
+          {framesInOut->id(), uint64_t(framesInOut->timestamp().toNSec()),
+           L.foreignIds.at(size_t(c.id)),
+           uint64_t(L.foreignFrames.at(size_t(c.id))->timestamp().toNSec()),
+           double(c.score), T_Sold_Snew.r().norm()});
       LOG(WARNING) << "FOREIGN-MAP LOOP: frame " << framesInOut->id() << " t_ns "
                    << framesInOut->timestamp().toNSec() << " -> foreign keyframe "
                    << L.foreignIds.at(size_t(c.id)) << " t_ns "
@@ -501,8 +506,15 @@ bool Frontend::writeLoopStatsJson(const std::string& path) const {
     << "  \"p99_embed_ms\": " << eP99 << ",\n"
     << "  \"prior_gated_candidates\": " << s.priorMahalanobis.size() << ",\n"
     << "  \"mean_prior_mahalanobis\": " << mMean << ",\n"
-    << "  \"max_prior_mahalanobis\": " << mMax << "\n"
-    << "}\n";
+    << "  \"max_prior_mahalanobis\": " << mMax << ",\n"
+    << "  \"foreign_loops\": [";
+  for (size_t i = 0; i < s.foreignLoops.size(); ++i) {
+    const auto& l = s.foreignLoops[i];
+    f << (i ? ",\n    " : "\n    ") << "{\"frame\": " << l.frameId << ", \"t_ns\": " << l.queryNs
+      << ", \"keyframe\": " << l.keyframeId << ", \"keyframe_t_ns\": " << l.keyframeNs
+      << ", \"score\": " << l.score << ", \"t_verified_m\": " << l.tNormM << "}";
+  }
+  f << (s.foreignLoops.empty() ? "]\n" : "\n  ]\n") << "}\n";
   LOG(INFO) << "loop stats written to " << path;
   return true;
 }

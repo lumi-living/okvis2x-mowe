@@ -315,6 +315,12 @@ class Frontend : public ViFrontendInterface {
     uint64_t foreignRejectedByGeometry = 0;
     uint64_t foreignRejectedByTemporal = 0;
     uint64_t loopsAcceptedAgainstForeignMap = 0;
+    /// per accepted foreign-map loop, so a run's evidence survives a truncated log
+    /// (the runner keeps only `tail -30`): query stamp, map keyframe stamp, VPR
+    /// score, verified |t_Sold_Snew| [m]. Classified against mocap by
+    /// tools/eval/check_foreign_loops.py.
+    struct ForeignLoop { uint64_t frameId, queryNs, keyframeId, keyframeNs; double score, tNormM; };
+    std::vector<ForeignLoop> foreignLoops;
     std::vector<double> verificationMs;   ///< per verifyRecognisedPlace call (VPR path)
     std::vector<double> embedMs;          ///< per keyframe VPR descriptor (embed + VLAD)
     std::vector<double> priorMahalanobis; ///< per gated candidate

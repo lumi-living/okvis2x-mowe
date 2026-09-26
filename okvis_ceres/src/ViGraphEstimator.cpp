@@ -84,36 +84,61 @@ bool ViGraphEstimator::eliminateStateByImuMerge(StateId stateId, StateId refId)
   problem_->RemoveResidualBlock(state.nextImuLink.residualBlockId);
   problem_->RemoveResidualBlock(previousImuLink.residualBlockId);
 
-  // handle GPS terms; to do: for loop over gps factors
-//  for(auto facIter = state.GpsFactors.begin(); facIter!= state.GpsFactors.end(); ++facIter){
-
-//      // Delete Residual Block
-//      problem_->RemoveResidualBlock(facIter->residualBlockId);
-
-//      // Merge IMU Measurements
-//      okvis::ImuMeasurementDeque currentOwnedMeasurements = facIter->errorTerm.get()->imuMeasurements();
-//      okvis::ImuMeasurementDeque mergedMeasurements = previousImuLink.errorTerm.get()->imuMeasurements();
-//      for(auto iter = currentOwnedMeasurements.begin(); iter!= currentOwnedMeasurements.end(); ++iter){
-//          if(iter->timeStamp > mergedMeasurements.back().timeStamp){
-//              mergedMeasurements.push_back(*iter);
-//          }
-//      }
-
-//      Eigen::Vector3d posMeas = facIter->errorTerm.get()->measurement();
-//      Eigen::Matrix3d infMeas = facIter->errorTerm.get()->information();
-//      okvis::Time tg = facIter->errorTerm.get()->tg();
-
-//      GpsFactor newGpsFac;
-//      newGpsFac.errorTerm.reset(new ceres::GpsErrorAsynchronous(posMeas, infMeas,
-//                                                                mergedMeasurements, imuParametersVec_.back(),previousState.timestamp, tg, gpsParametersVec_.back()));
-//      newGpsFac.residualBlockId = problem_->AddResidualBlock(newGpsFac.errorTerm.get(), nullptr,
-//                                                             previousState.pose->parameters(),previousState.speedAndBias->parameters(), previousState.T_GW->parameters());
-//      previousState.GpsFactors.push_back(newGpsFac);
-
-//  }
-
-//  problem_->AddResidualBlock(state.GpsFactors.back().errorTerm.get(),nullptr,
-//                             previousState.pose->parameters(),previousState.speedAndBias->parameters(), previousState.T_GW->parameters());
+  // Re-anchor GNSS factors of the eliminated state to the previous state.
+  // mow-e (T-0117, ADR-0042 design item 2 / issue 6): upstream left this as a
+  // commented-out to-do and erased the state from gpsStates_, so every fix that
+  // ViGraph::addGpsMeasurements() attached to a non-keyframe was silently lost
+  // (a slow mower makes few keyframes). The merged-into state's IMU link was just
+  // appended above, so its measurements cover [t_previous, t_next] and the new
+  // GpsErrorAsynchronous preintegrates from t_previous to the same t_g.
+  const StateId previousId = iterPrevious->first;
+  if(!state.GpsFactors.empty()) {
+    const bool canMerge = imuParametersVec_.at(0).use;
+    for(const auto& gpsFactor : state.GpsFactors) {
+      if(gpsFactor.residualBlockId) {
+        problem_->RemoveResidualBlock(gpsFactor.residualBlockId);
+      }
+      if(!canMerge) {
+        ++gpsFactorStats_.dropped;
+        continue;
+      }
+      const ceres::GpsErrorAsynchronous& old = *gpsFactor.errorTerm;
+      GpsFactor merged;
+      merged.errorTerm.reset(new ceres::GpsErrorAsynchronous(
+          old.measurement(), old.information(),
+          std::static_pointer_cast<ceres::ImuError>(previousImuLink.errorTerm)->imuMeasurements(),
+          imuParametersVec_.back(), previousState.timestamp, old.tg(), old.gpsParameters()));
+      if(gpsFactor.residualBlockId) { // was in the problem -> stays in the problem
+        merged.residualBlockId = problem_->AddResidualBlock(
+            merged.errorTerm.get(), cauchyGpsLossFunctionPtr_.get(),
+            previousState.pose->parameters(), previousState.speedAndBias->parameters(),
+            previousState.T_GW->parameters());
+      }
+      previousState.GpsFactors.push_back(merged);
+      ++gpsFactorStats_.merged;
+    }
+    if(canMerge) {
+      // bookkeeping the (re-)initialisation machinery keys by state id
+      gpsStates_.insert(previousId);
+      if(gpsReInitStates_.count(stateId)) {
+        gpsReInitStates_.insert(previousId);
+      }
+      auto range = gpsInitMap_.equal_range(stateId);
+      GpsMeasurementDeque initMeasurements; // aligned (Eigen members)
+      for(auto it = range.first; it != range.second; ++it) {
+        initMeasurements.push_back(it->second);
+      }
+      for(const auto& m : initMeasurements) {
+        gpsInitMap_.insert({previousId, m});
+      }
+      if(gpsDropoutId_ == stateId) {
+        gpsDropoutId_ = previousId;
+      }
+      if(positionAlignedId_ == stateId) {
+        positionAlignedId_ = previousId;
+      }
+    }
+  }
 
   // remove parameter blocks
   problem_->RemoveParameterBlock(state.pose->parameters());  // lose pose

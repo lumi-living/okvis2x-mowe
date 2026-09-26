@@ -33,6 +33,8 @@
 #include <csignal>
 #include <cstdint>
 #include <fstream>
+#include <limits>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -52,6 +54,8 @@
 #include <lifecycle_msgs/srv/change_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <mowe_msgs/msg/gnss_alignment_status.hpp> // T-0117
+#include <mowe_msgs/msg/gnss_enu.hpp>              // T-0117
 #include <std_srvs/srv/set_bool.hpp>
 
 #include "mowe_camera/camera.hpp"
@@ -70,6 +74,8 @@ struct RunStats {
   std::atomic<uint64_t> framesDropped{0};   ///< addImages() queue-full drop
   std::atomic<uint64_t> framesUnpaired{0};  ///< bundle without both eyes
   std::atomic<uint64_t> imuIngested{0};     ///< addImuMeasurement() accepted
+  std::atomic<uint64_t> gnssReceived{0};    ///< /gnss/enu messages (T-0117)
+  std::atomic<uint64_t> gnssIngested{0};    ///< addGpsMeasurement() accepted (T-0117)
   std::atomic<uint64_t> odomPublished{0};   ///< realtimePredictAndPublish() true
   std::atomic<int> crashes{0};              ///< fatal signals / uncaught exceptions
   std::atomic<int> engineLoaded{0};
@@ -127,6 +133,8 @@ static void writeStats() {
     << "  \"frames_ingested_ratio\": "
     << (offered ? double(g_stats.framesIngested) / double(offered) : 0.0) << ",\n"
     << "  \"imu_ingested\": " << g_stats.imuIngested << ",\n"
+    << "  \"gnss_received\": " << g_stats.gnssReceived << ",\n"
+    << "  \"gnss_ingested\": " << g_stats.gnssIngested << ",\n"
     << "  \"odom_published\": " << g_stats.odomPublished << ",\n"
     << "  \"engine_loaded\": " << g_stats.engineLoaded << ",\n"
     << "  \"crashes\": " << g_stats.crashes << ",\n"
@@ -309,8 +317,37 @@ int main(int argc, char **argv) {
         if (publisher.realtimePredictAndPublish(timestamp, acc, gyr)) ++g_stats.odomPublished;
       });
 
-  // TODO(mow-e, docs/MOWE_TODO.md): GNSS (NavSatFix -> addGpsMeasurement) and
-  // wheel odometry subscriptions go here.
+  // GNSS in (T-0117, ADR-0042 design item 1): gated RTK fixes in the per-lawn ENU
+  // frame G from mowe_gnss_ingest (T-0116), stamped on the IMU clock. Only when the
+  // config declares gps_parameters -- without a GPS sensor the estimator asserts.
+  // Same mapping as okvis::Subscriber::gnssCallback (that class is not linked here,
+  // see the okvis_ros2_pub note in CMakeLists.txt).
+  rclcpp::Subscription<mowe_msgs::msg::GnssEnu>::SharedPtr gnssSubscription;
+  rclcpp::Publisher<mowe_msgs::msg::GnssAlignmentStatus>::SharedPtr gnssStatusPublisher;
+  rclcpp::TimerBase::SharedPtr gnssStatusTimer;
+  if (parameters.gps) {
+    gnssSubscription = node->create_subscription<mowe_msgs::msg::GnssEnu>(
+        "/gnss/enu", rclcpp::SensorDataQoS().keep_last(100),
+        [&estimator](const mowe_msgs::msg::GnssEnu &msg) {
+          const okvis::Time timestamp(msg.header.stamp.sec, msg.header.stamp.nanosec);
+          const Eigen::Vector3d p_G(msg.p_g.x, msg.p_g.y, msg.p_g.z);
+          const Eigen::Vector3d sigma(msg.sigma.x, msg.sigma.y, msg.sigma.z);
+          ++g_stats.gnssReceived;
+          if (estimator.addGpsMeasurement(timestamp, p_G, sigma)) ++g_stats.gnssIngested;
+        });
+    gnssStatusPublisher = node->create_publisher<mowe_msgs::msg::GnssAlignmentStatus>(
+        "/okvis2x/gnss_alignment_status", rclcpp::QoS(1).reliable().transient_local());
+    gnssStatusTimer = node->create_wall_timer(std::chrono::seconds(1), [&]() {
+      mowe_msgs::msg::GnssAlignmentStatus msg;
+      msg.header.stamp = node->now();
+      msg.header.frame_id = "map";
+      double yawSigmaDeg = std::numeric_limits<double>::quiet_NaN();
+      msg.status = uint8_t(estimator.gpsAlignmentStatus(&yawSigmaDeg));
+      msg.yaw_sigma_rad = yawSigmaDeg * M_PI / 180.0;
+      gnssStatusPublisher->publish(msg);
+    });
+  }
+  // TODO(mow-e, docs/MOWE_TODO.md): wheel odometry subscription goes here (T-0125).
 
   // Camera in directly via mowe_camera_core (no ROS on the image path).
   mowe::camera::CameraConfig cam_cfg;

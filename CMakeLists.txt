@@ -514,6 +514,9 @@ if(BUILD_ROS2)
   find_package(sensor_msgs REQUIRED)
   find_package(visualization_msgs REQUIRED)
   find_package(nav_msgs REQUIRED)
+  # mow-e (T-0117): /gnss/enu + gnss_alignment_status (onboard/common/mowe_msgs, ADR-0042).
+  # REQUIRED on purpose: a build without it would silently lack the GNSS input.
+  find_package(mowe_msgs REQUIRED)
   find_package(Boost REQUIRED)
   find_package(tf2_eigen REQUIRED)
   find_package(tf2_geometry_msgs REQUIRED)
@@ -610,6 +613,7 @@ if(BUILD_ROS2)
     tf2_ros
     tf2_eigen
     tf2_geometry_msgs
+    mowe_msgs
   )
   # mow-e: see the find_package note above. okvis::Ros2's own sources
   # (Subscriber/RosbagReader/Publisher/RePublisher) never include
@@ -699,7 +703,7 @@ if(BUILD_ROS2)
       ${Boost_LIBRARIES}
       ${PCL_LIBRARIES}
     )
-    ament_target_dependencies(okvis2x_node_mowe rclcpp sensor_msgs std_srvs lifecycle_msgs)
+    ament_target_dependencies(okvis2x_node_mowe rclcpp sensor_msgs std_srvs lifecycle_msgs mowe_msgs)
     install(TARGETS okvis2x_node_mowe DESTINATION lib/${PROJECT_NAME})
   endif()
 

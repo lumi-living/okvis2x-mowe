@@ -65,6 +65,7 @@
 
 #include <se/supereight.hpp>
 #include <Eigen/StdVector>
+#include <limits>
 
 /// \brief okvis Main namespace of this package.
 namespace okvis {
@@ -469,6 +470,28 @@ class ViGraph
   /// \return True if GPS Trafo is observable.
   bool isGpsObservable(){return gpsObservability_;}
 
+  /// \brief mow-e (T-0117, ADR-0042 design item 2): GNSS factor bookkeeping.
+  struct GpsFactorStats {
+    size_t added = 0;   ///< Factors created by addGpsMeasurement().
+    size_t merged = 0;  ///< Factors re-anchored by eliminateStateByImuMerge().
+    size_t dropped = 0; ///< Factors discarded at elimination (no IMU to preintegrate with).
+  };
+  /// \brief mow-e (T-0117): GNSS factor bookkeeping of this graph.
+  const GpsFactorStats& gpsFactorStats() const { return gpsFactorStats_; }
+  /// \brief mow-e (T-0117): yaw sigma [deg] of the T_GW fit when the status became
+  /// Initialised (NaN before that).
+  double gpsYawSigmaDegAtInit() const { return gpsYawSigmaDegAtInit_; }
+  /// \brief mow-e (T-0117): GNSS factors attached to a state.
+  /// \param id The state.
+  /// \param[out] inProblem If given, how many of them are residual blocks in the ceres problem.
+  /// \return Number of factors on the state (0 if the state does not exist).
+  size_t numGpsFactors(StateId id, size_t* inProblem = nullptr) const;
+  /// \brief mow-e (T-0117): GNSS factors over all states of this graph.
+  size_t numGpsFactors() const;
+  /// \brief mow-e (T-0117): the k-th GNSS error term of a state (tests / diagnostics).
+  /// \return The error term, or nullptr if the state or the factor does not exist.
+  std::shared_ptr<const ceres::GpsErrorAsynchronous> gpsErrorTerm(StateId id, size_t k) const;
+
   /// \brief Check if GPS trafo is fixed
   /// \return True if GPS Trafo is fixed.
   bool isGpsFixed(){return gpsFixed_;}
@@ -856,6 +879,8 @@ protected:
 
   std::set<StateId> gpsReInitStates_; /// < Set containing States with gps measurements during re-initialization
   bool gpsReInitialised_ = false; /// < Flag if Re-Initialisation is successful and GPS LC can be triggered
+  GpsFactorStats gpsFactorStats_; ///< mow-e (T-0117): GNSS factor bookkeeping.
+  double gpsYawSigmaDegAtInit_ = std::numeric_limits<double>::quiet_NaN(); ///< mow-e (T-0117).
 
 
   /// \brief Store 4D local parametrisation (position, yaw) for GPS extrinsics locally

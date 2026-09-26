@@ -17,6 +17,9 @@
  * @author Andreas Forster
  */
  
+#include <limits>
+#include <chrono>
+#include <cmath>
 #include <glog/logging.h>
 #include <okvis/ros2/Subscriber.hpp>
 #include <okvis/ros2/PointCloudUtilities.hpp>
@@ -112,6 +115,45 @@ void Subscriber::setNodeHandle(std::shared_ptr<rclcpp::Node> node,
       "/okvis/lidar", 100000,
       std::bind(&Subscriber::lidarCallback, this, std::placeholders::_1));
   }
+
+  // mow-e (T-0117, ADR-0042 design item 1): GNSS in only when the config declares
+  // gps_parameters (otherwise the estimator has no GPS sensor and would assert).
+  // /gnss/enu is already gated (FIXED pass / FLOAT inflated / else dropped) and
+  // stamped with the time of validity on the IMU clock by mowe_gnss_ingest (T-0116).
+  if(parameters_.gps) {
+    subGnss_ = node_->create_subscription<mowe_msgs::msg::GnssEnu>(
+      "/gnss/enu", rclcpp::SensorDataQoS().keep_last(100),
+      std::bind(&Subscriber::gnssCallback, this, std::placeholders::_1));
+    pubGnssStatus_ = node_->create_publisher<mowe_msgs::msg::GnssAlignmentStatus>(
+      "/okvis2x/gnss_alignment_status", rclcpp::QoS(1).reliable().transient_local());
+    gnssStatusTimer_ = node_->create_wall_timer(
+      std::chrono::seconds(1), std::bind(&Subscriber::publishGnssAlignmentStatus, this));
+  }
+}
+
+void Subscriber::gnssCallback(const mowe_msgs::msg::GnssEnu& msg)
+{
+  ++gnssReceived_;
+  const okvis::Time timestamp(msg.header.stamp.sec, msg.header.stamp.nanosec);
+  const Eigen::Vector3d p_G(msg.p_g.x, msg.p_g.y, msg.p_g.z);
+  const Eigen::Vector3d sigma(msg.sigma.x, msg.sigma.y, msg.sigma.z);
+  if(viInterface_->addGpsMeasurement(timestamp, p_G, sigma)) {
+    ++gnssAccepted_;
+  } else {
+    LOG_EVERY_N(WARNING, 50) << "[GNSS] fix not accepted by the estimator ("
+                             << gnssAccepted_ << "/" << gnssReceived_ << " accepted)";
+  }
+}
+
+void Subscriber::publishGnssAlignmentStatus()
+{
+  mowe_msgs::msg::GnssAlignmentStatus msg;
+  msg.header.stamp = node_->now();
+  msg.header.frame_id = "map";
+  double yawSigmaDeg = std::numeric_limits<double>::quiet_NaN();
+  msg.status = uint8_t(viInterface_->gpsAlignmentStatus(&yawSigmaDeg)); // same enum values as ViGraph::gpsStatus
+  msg.yaw_sigma_rad = yawSigmaDeg * M_PI / 180.0;
+  pubGnssStatus_->publish(msg);
 }
 
 void Subscriber::shutdown() {
@@ -120,6 +162,8 @@ void Subscriber::shutdown() {
     imageSubscribers_[i].shutdown();
   }
   subImu_.reset();
+  subGnss_.reset();          // mow-e (T-0117)
+  gnssStatusTimer_.reset();  // mow-e (T-0117)
 }
 
 void Subscriber::imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg,

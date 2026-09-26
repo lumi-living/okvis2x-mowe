@@ -134,6 +134,7 @@ bool ViSlamBackend::tryGpsAlignment(){
     addGpsAlignmentFrame(StateId(1));
     realtimeGraph_.resetInitialGpsAlignment();
     fullGraph_.resetInitialGpsAlignment();
+    ++gpsInitialAlignments_; // mow-e (T-0117)
     return true;
   }
 
@@ -154,6 +155,7 @@ bool ViSlamBackend::tryGpsAlignment(){
     addGpsAlignmentFrame(gpsDropId);
     realtimeGraph_.resetFullGpsAlignment();
     fullGraph_.resetFullGpsAlignment();
+    ++gpsFullAlignments_; // mow-e (T-0117)
     return true;
   }
   else{
@@ -164,6 +166,7 @@ bool ViSlamBackend::tryGpsAlignment(){
       addGpsAlignmentFrame(gpsDropId);
       realtimeGraph_.resetPosGpsAlignment();
       fullGraph_.resetPosGpsAlignment();
+      ++gpsPosAlignments_; // mow-e (T-0117)
       return true;
     }
     else{
@@ -1716,12 +1719,34 @@ bool ViSlamBackend::synchroniseRealtimeAndFullGraph(std::vector<StateId> &update
   // ----- gps stuff begin -----
   // Process buffered gps measurements
   for(auto addGpsMeas : addGpsBacklog_){
-      bool stillExistsInRealtimeGraph = fullGraph_.states_.count(addGpsMeas.id) !=0;
-      if(stillExistsInRealtimeGraph) {
-          if(addGpsMeas.reInitFlag){
-            fullGraph_.reInitGpsExtrinsics();
-            }
-          fullGraph_.addGpsMeasurement(addGpsMeas.id, addGpsMeas.gpsMeasurement, addGpsMeas.imuMeasurements);
+      StateId id = addGpsMeas.id;
+      ImuMeasurementDeque imuMeasurements = addGpsMeas.imuMeasurements;
+      if(fullGraph_.states_.count(id) == 0) {
+        // mow-e (T-0117, ADR-0042 design item 2): the state was a non-keyframe that
+        // eliminateStates_ (applied above) merged away while the loop closure ran;
+        // upstream skipped the fix here (18 % of all fixes on TUM-VI room1 with 5 Hz
+        // GNSS). Re-anchor it to the latest surviving state at/before the fix, exactly
+        // where ViGraph::addGpsMeasurements() would put it now, and preintegrate over
+        // that state's IMU link -- it was extended to the next surviving state by the
+        // merge, so it covers the GNSS time (the backlogged deque may not reach back).
+        auto iter = fullGraph_.states_.upper_bound(id); // ids are monotone in time
+        if(iter == fullGraph_.states_.begin()) {
+          ++gpsBacklogDropped_;
+          continue;
+        }
+        --iter;
+        id = iter->first;
+        if(fullGraph_.imuParametersVec_.at(0).use && iter->second.nextImuLink.errorTerm) {
+          imuMeasurements = std::static_pointer_cast<ceres::ImuError>(
+                iter->second.nextImuLink.errorTerm)->imuMeasurements();
+        }
+        ++gpsBacklogReanchored_;
+      }
+      if(addGpsMeas.reInitFlag){
+        fullGraph_.reInitGpsExtrinsics();
+      }
+      if(!fullGraph_.addGpsMeasurement(id, addGpsMeas.gpsMeasurement, imuMeasurements)) {
+        ++gpsBacklogDropped_;
       }
   }
   addGpsBacklog_.clear();
@@ -2323,7 +2348,24 @@ bool ViSlamBackend::writeFinalCsvTrajectory(const std::string &csvFileName, bool
   return success;
 }
 
-bool ViSlamBackend::writeGlobalCsvTrajectory(const std::string &csvFileName) const
+// mow-e (T-0117)
+ViSlamBackend::GpsStats ViSlamBackend::gpsStats() const
+{
+  GpsStats s;
+  s.realtime = realtimeGraph_.gpsFactorStats();
+  s.full = fullGraph_.gpsFactorStats();
+  s.factorsInRealtimeGraph = realtimeGraph_.numGpsFactors();
+  s.factorsInFullGraph = fullGraph_.numGpsFactors();
+  s.initialAlignments = gpsInitialAlignments_;
+  s.fullAlignments = gpsFullAlignments_;
+  s.posAlignments = gpsPosAlignments_;
+  s.backlogReanchored = gpsBacklogReanchored_;
+  s.backlogDropped = gpsBacklogDropped_;
+  s.yawSigmaDegAtInit = realtimeGraph_.gpsYawSigmaDegAtInit();
+  return s;
+}
+
+bool ViSlamBackend::writeGlobalCsvTrajectory(const std::string &csvFileName, bool antenna) const
 {
   std::fstream csvFile(csvFileName.c_str(), std::ios_base::out);
   bool success =  csvFile.good();
@@ -2336,8 +2378,11 @@ bool ViSlamBackend::writeGlobalCsvTrajectory(const std::string &csvFileName) con
   kinematics::Transformation T_GW;
 
   // write description
-  csvFile << "timestamp" << ", " << "p_GA_G_x" << ", " << "p_GA_G_y" << ", "
-               << "p_GA_G_z" << std::endl;
+  // mow-e (T-0117): antenna=false writes the IMU (S) origin in G instead of the
+  // antenna (A), which is what a ground truth of the IMU pose compares against.
+  const std::string what = antenna ? "p_GA_G" : "p_GS_G";
+  csvFile << "timestamp" << ", " << what << "_x" << ", " << what << "_y" << ", "
+               << what << "_z" << std::endl;
   for(auto iter=realtimeGraph_.anyState_.begin(); iter!=realtimeGraph_.anyState_.end(); ++iter) {
     Eigen::Vector3d p_GA_G;
     std::stringstream time;
@@ -2358,7 +2403,9 @@ bool ViSlamBackend::writeGlobalCsvTrajectory(const std::string &csvFileName) con
     }
 
     T_GW = realtimeGraph_.T_GW();
-    p_GA_G =  T_GW.C() * (T_WS.r() + T_WS.C()* realtimeGraph_.gpsParametersVec_.back().r_SA ) + T_GW.r();
+    const Eigen::Vector3d r_SA = antenna ? realtimeGraph_.gpsParametersVec_.back().r_SA
+                                         : Eigen::Vector3d::Zero();
+    p_GA_G =  T_GW.C() * (T_WS.r() + T_WS.C()* r_SA ) + T_GW.r();
     csvFile << time.str() << ", " << std::scientific
         << std::setprecision(18) << p_GA_G[0] << ", " << p_GA_G[1] << ", "
         << p_GA_G[2] <<  std::endl;

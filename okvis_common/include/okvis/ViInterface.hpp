@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <functional>
 #include <atomic>
 #include <mutex>
@@ -427,6 +428,30 @@ class ViInterface
    */
   virtual bool addLidarMeasurement(const okvis::Time & stamp,
                                    const Eigen::Vector3d & rayMeasurement) = 0;
+
+  /**
+   * \brief          Add a GNSS position measurement (cartesian, frame G).
+   *                 mow-e (T-0117, ADR-0042 design item 1): lets the ROS 2 wrapper feed
+   *                 fixes through the interface it already holds. Default: not supported.
+   * \param stamp    The time of validity on the IMU clock.
+   * \param posGps   Antenna position in G [m].
+   * \param errGps   Per-axis standard deviation [m].
+   * \return True if accepted.
+   */
+  virtual bool addGpsMeasurement(const okvis::Time & /*stamp*/,
+                                 const Eigen::Vector3d & /*posGps*/,
+                                 const Eigen::Vector3d & /*errGps*/) { return false; }
+
+  /**
+   * \brief mow-e (T-0117): GNSS alignment state machine (ViGraph::gpsStatus:
+   *        0 Off, 1 Idle, 2 Initialising, 3 Initialised, 4 ReInitialising).
+   * \param[out] yawSigmaDeg If given, the yaw sigma [deg] of the T_GW fit at
+   *             initialisation (NaN before Initialised).
+   */
+  virtual int gpsAlignmentStatus(double* yawSigmaDeg = nullptr) const {
+    if(yawSigmaDeg) *yawSigmaDeg = std::numeric_limits<double>::quiet_NaN();
+    return 0;
+  }
   /// \}
   /// \name Setters
   /// \{

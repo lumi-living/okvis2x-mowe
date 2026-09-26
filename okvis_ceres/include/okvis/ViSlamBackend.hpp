@@ -326,6 +326,26 @@ class ViSlamBackend //: public VioBackendInterface
     return realtimeGraph_.gpsMeasurements(stateId, gpsMeasurements);
   }
 
+  /// \brief mow-e (T-0117): GNSS state machine of the realtime graph (ViGraph::gpsStatus).
+  gpsStatus getGpsStatus() const { return realtimeGraph_.gpsStatus_; }
+  /// \brief mow-e (T-0117): yaw sigma [deg] when T_GW became Initialised (NaN before).
+  double gpsYawSigmaDegAtInit() const { return realtimeGraph_.gpsYawSigmaDegAtInit(); }
+
+  /// \brief mow-e (T-0117): GNSS factor / alignment bookkeeping for gnss_stats.json.
+  struct GpsStats {
+    ViGraph::GpsFactorStats realtime; ///< Factor counters of the realtime graph.
+    ViGraph::GpsFactorStats full;     ///< Factor counters of the full graph.
+    size_t factorsInRealtimeGraph = 0; ///< GNSS factors currently attached in the realtime graph.
+    size_t factorsInFullGraph = 0;     ///< GNSS factors currently attached in the full graph.
+    size_t initialAlignments = 0; ///< Initial T_GW alignments applied.
+    size_t fullAlignments = 0;    ///< Full (position + yaw) re-alignments after a dropout.
+    size_t posAlignments = 0;     ///< Position-only re-alignments after a dropout.
+    size_t backlogReanchored = 0; ///< Loop-closure-backlogged fixes re-anchored to a surviving state (full graph).
+    size_t backlogDropped = 0;    ///< Backlogged fixes that could not be attached (no state before them / IMU gap).
+    double yawSigmaDegAtInit = 0.0; ///< Yaw sigma [deg] when T_GW became Initialised (NaN if never).
+  };
+  GpsStats gpsStats() const;
+
   /**
    * @brief Is a state a keyframe?
    * @param id The state ID in question.
@@ -516,7 +536,7 @@ class ViSlamBackend //: public VioBackendInterface
   /// \brief Write the full optimised trajectory in the global reference frame into a file.
   /// \param csvFileName Path to file to write.
   /// \return True on success
-  bool writeGlobalCsvTrajectory(const std::string& csvFileName) const;
+  bool writeGlobalCsvTrajectory(const std::string& csvFileName, bool antenna = true) const;
 
   /// \brief Attempt loop closure.
   /// \param pose_i The old frame that was recognised.
@@ -647,6 +667,12 @@ class ViSlamBackend //: public VioBackendInterface
 
   /// \brief Add a GPS alignment ("GPS loop closure") frame (after successful attempt).
   void addGpsAlignmentFrame(StateId gpsLossFrameId);
+
+  size_t gpsInitialAlignments_ = 0; ///< mow-e (T-0117): counters for gpsStats().
+  size_t gpsFullAlignments_ = 0;    ///< mow-e (T-0117).
+  size_t gpsPosAlignments_ = 0;     ///< mow-e (T-0117).
+  size_t gpsBacklogReanchored_ = 0; ///< mow-e (T-0117).
+  size_t gpsBacklogDropped_ = 0;    ///< mow-e (T-0117).
 
   /// \brief             Add Alignment constraints from submapping interface
   /// @param frame_A_id  ID of frame {A}

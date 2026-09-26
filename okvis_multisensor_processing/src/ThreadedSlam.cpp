@@ -27,6 +27,9 @@
 
 #include <glog/logging.h>
 
+#include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <okvis/ThreadedSlam.hpp>
 #include <okvis/assert_macros.hpp>
 #include <okvis/ceres/ImuError.hpp>
@@ -356,6 +359,7 @@ bool ThreadedSlam::addGpsMeasurement(const okvis::Time& stamp,
   gps_measurement.timeStamp = stamp;
   gps_measurement.measurement = gpsReading;
   const int gpsQueueSize = 5000;
+  ++gpsFixesReceived_; // mow-e (T-0117)
 
   if (blocking_)
   {
@@ -384,6 +388,7 @@ bool ThreadedSlam::addGeodeticGpsMeasurement(const okvis::Time& stamp,
   gps_measurement.timeStamp = stamp;
   gps_measurement.measurement = gpsReading;
   const int gpsQueueSize = 5000;
+  ++gpsFixesReceived_; // mow-e (T-0117)
 
   if (blocking_)
   {
@@ -843,6 +848,14 @@ bool ThreadedSlam::processFrame() {
 
   // Add GPS Measurements
   estimator_.addGpsMeasurementsOnAllGraphs(gpsMeasurementDeque_, imuMeasurementDeque_);
+  // mow-e (T-0117): status timeline for gnss_stats.json
+  if(parameters_.gps) {
+    const int status = int(estimator_.getGpsStatus());
+    if(status != lastGpsStatus_) {
+      gpsStatusTimeline_.emplace_back(multiFrame->timestamp(), status);
+      lastGpsStatus_ = status;
+    }
+  }
 
   // remove gpsMeasurements from deque
   while(!shutdown_ && !gpsMeasurementDeque_.empty() && gpsMeasurementDeque_.front().timeStamp < multiFrame->timestamp() )
@@ -1462,10 +1475,84 @@ void ThreadedSlam::writeFinalTrajectoryCsv()
   }
 }
 
-void ThreadedSlam::writeGlobalTrajectoryCsv(const std::string& csvFileName)
+void ThreadedSlam::writeGlobalTrajectoryCsv(const std::string& csvFileName, bool antenna)
 {
 
-  estimator_.writeGlobalCsvTrajectory(csvFileName);
+  estimator_.writeGlobalCsvTrajectory(csvFileName, antenna);
+}
+
+// mow-e (T-0117)
+int ThreadedSlam::gpsAlignmentStatus(double* yawSigmaDeg) const
+{
+  if(yawSigmaDeg) *yawSigmaDeg = estimator_.gpsYawSigmaDegAtInit();
+  return int(estimator_.getGpsStatus());
+}
+
+// mow-e (T-0117): plain ostream JSON, no library. Definitions:
+//   fixes_received            addGpsMeasurement() calls (before any queueing/dropping)
+//   fixes_gated_in            factors created on the realtime graph (fix attached to a state)
+//   fixes_retained_as_factors GNSS factors present in the full graph at the end (the graph that
+//                             keeps every state) -- counts what survived elimination, not what
+//                             was subtracted
+//   reinit_after_outage       ReInitialising -> Initialised transitions (a full re-alignment)
+void ThreadedSlam::writeGnssStatsJson(const std::string& jsonFileName)
+{
+  const ViSlamBackend::GpsStats s = estimator_.gpsStats();
+  static const char* names[] = {"Off", "Idle", "Initialising", "Initialised", "ReInitialising"};
+  auto name = [&](int st) { return (st >= 0 && st <= 4) ? names[st] : "?"; };
+  const size_t received = gpsFixesReceived_.load();
+  const size_t gatedIn = s.realtime.added;
+  const size_t retained = s.factorsInFullGraph;
+  bool reachedInitialised = false;
+  int reinits = 0, reinitDone = 0;
+  for(size_t i = 0; i < gpsStatusTimeline_.size(); ++i) {
+    const int st = gpsStatusTimeline_[i].second;
+    if(st == int(gpsStatus::Initialised)) reachedInitialised = true;
+    if(st == int(gpsStatus::ReInitialising)) ++reinits;
+    if(i > 0 && st == int(gpsStatus::Initialised)
+       && gpsStatusTimeline_[i-1].second == int(gpsStatus::ReInitialising)) ++reinitDone;
+  }
+  const kinematics::Transformation T_GW = estimator_.T_GW();
+  const Eigen::Quaterniond q = T_GW.q();
+  // T_GW is 4-DoF (PoseManifold4d): report the yaw directly, not eulerAngles() (which
+  // returns 179/180/180 for a near-zero yaw).
+  const double yaw = std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()), 1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
+  std::ofstream f(jsonFileName);
+  f << std::setprecision(12);
+  f << "{\n";
+  f << "  \"fixes_received\": " << received << ",\n";
+  f << "  \"fixes_gated_in\": " << gatedIn << ",\n";
+  f << "  \"fixes_retained_as_factors\": " << retained << ",\n";
+  f << "  \"fixes_retained_as_factors_ratio\": " << (gatedIn ? double(retained) / double(gatedIn) : 0.0) << ",\n";
+  f << "  \"factors_merged_on_elimination_realtime\": " << s.realtime.merged << ",\n";
+  f << "  \"factors_merged_on_elimination_full\": " << s.full.merged << ",\n";
+  f << "  \"factors_dropped_on_elimination_realtime\": " << s.realtime.dropped << ",\n";
+  f << "  \"factors_dropped_on_elimination_full\": " << s.full.dropped << ",\n";
+  f << "  \"factors_in_realtime_graph_final\": " << s.factorsInRealtimeGraph << ",\n";
+  f << "  \"factors_in_full_graph_final\": " << s.factorsInFullGraph << ",\n";
+  f << "  \"factors_added_full\": " << s.full.added << ",\n";
+  f << "  \"backlog_reanchored_full\": " << s.backlogReanchored << ",\n";
+  f << "  \"backlog_dropped_full\": " << s.backlogDropped << ",\n";
+  f << "  \"status_reached_initialised\": " << (reachedInitialised ? 1 : 0) << ",\n";
+  f << "  \"status_final\": " << int(estimator_.getGpsStatus()) << ",\n";
+  f << "  \"yaw_sigma_deg_at_init\": " << s.yawSigmaDegAtInit << ",\n";
+  f << "  \"initial_alignments\": " << s.initialAlignments << ",\n";
+  f << "  \"full_alignments\": " << s.fullAlignments << ",\n";
+  f << "  \"pos_alignments\": " << s.posAlignments << ",\n";
+  f << "  \"reinit_events\": " << reinits << ",\n";
+  f << "  \"reinit_after_outage\": " << reinitDone << ",\n";
+  f << "  \"T_GW_final\": {\"r_G\": [" << T_GW.r()[0] << ", " << T_GW.r()[1] << ", " << T_GW.r()[2]
+    << "], \"q_xyzw\": [" << T_GW.q().x() << ", " << T_GW.q().y() << ", " << T_GW.q().z() << ", " << T_GW.q().w()
+    << "], \"yaw_deg\": " << yaw * 180.0 / M_PI << "},\n";
+  f << "  \"status_timeline\": [";
+  for(size_t i = 0; i < gpsStatusTimeline_.size(); ++i) {
+    const double t = gpsStatusTimeline_[i].first.toSec();
+    const double t0 = gpsStatusTimeline_.front().first.toSec();
+    f << (i ? ",\n    " : "\n    ") << "{\"t_s\": " << t << ", \"t_rel_s\": " << t - t0
+      << ", \"status\": " << gpsStatusTimeline_[i].second << ", \"name\": \"" << name(gpsStatusTimeline_[i].second) << "\"}";
+  }
+  f << (gpsStatusTimeline_.empty() ? "]\n" : "\n  ]\n");
+  f << "}\n";
 }
 
 void ThreadedSlam::doFinalBa()

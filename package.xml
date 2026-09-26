@@ -28,6 +28,7 @@
   <depend>lifecycle_msgs</depend> <!-- mow-e: okvis2x_node_mowe (USE_MOWE_XFEAT) -->
   <depend>mowe_camera</depend> <!-- mow-e: okvis_xfeat_frontend links mowe_camera_core (USE_MOWE_XFEAT); orders the colcon build -->
   <depend>sensor_msgs</depend>
+  <depend>mowe_msgs</depend> <!-- mow-e (T-0117): /gnss/enu in, gnss_alignment_status out (ADR-0042) -->
   <depend>visualization_msgs</depend>
   <!-- mow-e: only needed with USE_NN=ON (okvis2x_network_node). Not in any ROS
        distro - standalone repo ethz-mrl/language_feature_msgs. Declaring it

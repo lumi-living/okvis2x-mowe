@@ -136,7 +136,10 @@ class ThreadedSlam : public ViInterface {
    */
   virtual bool addGpsMeasurement(const okvis::Time & stamp,
                                  const Eigen::Vector3d & posGps,
-                                 const Eigen::Vector3d & errGps);
+                                 const Eigen::Vector3d & errGps) override final;
+
+  /// \brief mow-e (T-0117): see ViInterface::gpsAlignmentStatus.
+  virtual int gpsAlignmentStatus(double* yawSigmaDeg = nullptr) const override final;
 
   /**
    * \brief          Add a GPS measurement with geodetic coordinates.
@@ -208,7 +211,13 @@ class ThreadedSlam : public ViInterface {
 
   /// \brief  Writes final trajectory in the global reference frame to a csv File
   /// \param csvFileName name of the output file
-  void writeGlobalTrajectoryCsv(const std::string& csvFileName);
+  /// \param antenna mow-e (T-0117): antenna position (upstream) or, if false, the IMU origin in G.
+  void writeGlobalTrajectoryCsv(const std::string& csvFileName, bool antenna = true);
+
+  /// \brief mow-e (T-0117): write GNSS bookkeeping (status timeline, yaw sigma at init,
+  /// fixes received / gated in / retained as factors, re-init events, final T_GW) as JSON.
+  /// \param jsonFileName name of the output file
+  void writeGnssStatsJson(const std::string& jsonFileName);
 
   /// \brief Write some debug information to csv file
   /// \param csvFilePrefix File Prefix vor csv files
@@ -363,6 +372,9 @@ private:
   bool firstFrame_ = true; ///< Is it the first frame?
   ImuMeasurementDeque imuMeasurementDeque_;  ///< Stored IMU measurements to be used next.
   GpsMeasurementDeque gpsMeasurementDeque_;  ///< Stored GPS Measurements to be used next.
+  std::atomic<size_t> gpsFixesReceived_{0}; ///< mow-e (T-0117): addGpsMeasurement() calls.
+  std::vector<std::pair<okvis::Time, int>> gpsStatusTimeline_; ///< mow-e (T-0117): (frame time, status) at each change.
+  int lastGpsStatus_ = -1; ///< mow-e (T-0117).
   LidarMeasurementDeque lidarMeasurementDeque_;  ///< Stored lidar Measurements to be used next.
   DepthMeasurementDeque depthMeasurementDeque_; ///< Stored depth Measurements to be used next.
 

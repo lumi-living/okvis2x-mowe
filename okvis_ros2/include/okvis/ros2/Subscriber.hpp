@@ -34,6 +34,8 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <mowe_msgs/msg/gnss_enu.hpp>              // mow-e (T-0117)
+#include <mowe_msgs/msg/gnss_alignment_status.hpp> // mow-e (T-0117)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 #include <opencv2/opencv.hpp>
@@ -107,6 +109,11 @@ class Subscriber
   /// @brief The lidar sensor callback
   /// @param msg the lidar sensor ROS message
   void lidarCallback(const sensor_msgs::msg::PointCloud2& msg);
+  /// @brief mow-e (T-0117, ADR-0042 design item 1): gated RTK fix in the per-lawn ENU
+  /// frame G from mowe_gnss_ingest (/gnss/enu) -> ViInterface::addGpsMeasurement.
+  void gnssCallback(const mowe_msgs::msg::GnssEnu& msg);
+  /// @brief mow-e (T-0117): 1 Hz publisher of the estimator's GNSS alignment state.
+  void publishGnssAlignmentStatus();
 
   /// @brief function that performs the synchronization of the different ir and depth images for the slam system
   void synchronizeData();
@@ -120,6 +127,11 @@ class Subscriber
   std::vector<image_transport::Subscriber> depthImageSubscribers_; ///< The depth image message subscriber
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu_;  ///< The IMU message subscriber.
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLiDAR_;  ///< The LiDAR message subscriber.
+  rclcpp::Subscription<mowe_msgs::msg::GnssEnu>::SharedPtr subGnss_; ///< mow-e (T-0117): /gnss/enu.
+  rclcpp::Publisher<mowe_msgs::msg::GnssAlignmentStatus>::SharedPtr pubGnssStatus_; ///< mow-e (T-0117).
+  rclcpp::TimerBase::SharedPtr gnssStatusTimer_; ///< mow-e (T-0117).
+  uint64_t gnssReceived_ = 0; ///< mow-e (T-0117): fixes received on /gnss/enu.
+  uint64_t gnssAccepted_ = 0; ///< mow-e (T-0117): fixes accepted by the estimator.
   std::mutex time_mutex_; ///< Lock when accessing time
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gtPoses_;

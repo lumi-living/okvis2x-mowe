@@ -1005,9 +1005,35 @@ bool ViGraph::addGpsMeasurement(StateId poseId, GpsMeasurement &gpsMeas, const I
                                                                    state.pose->parameters(),state.speedAndBias->parameters(), state.T_GW->parameters());
     }
     state.GpsFactors.push_back(newGpsFactor);
+    ++gpsFactorStats_.added; // mow-e (T-0117)
 
     return true;
 
+}
+
+// mow-e (T-0117)
+size_t ViGraph::numGpsFactors(StateId id, size_t* inProblem) const {
+  if(inProblem) *inProblem = 0;
+  auto it = states_.find(id);
+  if(it == states_.end()) return 0;
+  if(inProblem) {
+    for(const auto& f : it->second.GpsFactors) if(f.residualBlockId) ++(*inProblem);
+  }
+  return it->second.GpsFactors.size();
+}
+
+// mow-e (T-0117)
+std::shared_ptr<const ceres::GpsErrorAsynchronous> ViGraph::gpsErrorTerm(StateId id, size_t k) const {
+  auto it = states_.find(id);
+  if(it == states_.end() || k >= it->second.GpsFactors.size()) return nullptr;
+  return it->second.GpsFactors[k].errorTerm;
+}
+
+// mow-e (T-0117)
+size_t ViGraph::numGpsFactors() const {
+  size_t n = 0;
+  for(const auto& s : states_) n += s.second.GpsFactors.size();
+  return n;
 }
 
 void ViGraph::gpsMeasurements(StateId stateId, AlignedVector<Eigen::Vector3d>& gpsMeasurements){
@@ -1342,8 +1368,9 @@ bool ViGraph::initializationStrategy(kinematics::Transformation& T_GW_est) {
       break;
 
     case gpsStatus::Initialising : // initialization state
-      gpsObservability_ = checkForGpsInit(T_GW_init,gpsStates_);
+      gpsObservability_ = checkForGpsInit(T_GW_init,gpsStates_, &yaw_error);
       if(gpsObservability_){
+        gpsYawSigmaDegAtInit_ = yaw_error; // mow-e (T-0117): logged to gnss_stats.json
         setGpsExtrinsics(T_GW_init);
         gpsStatus_ = gpsStatus::Initialised;
         T_GW_init_ = T_GW_init;
@@ -1405,11 +1432,16 @@ bool ViGraph::initializationStrategy(kinematics::Transformation& T_GW_est) {
 
 void ViGraph::addGpsInitFactors(){
  
-  // Go through buffered GPS Measurements for Initialization
-  for(auto& init_measurement : gpsInitMap_){
+  // Go through buffered GPS Measurements for Initialization.
+  // mow-e (T-0117): gpsInitMap_ is a multimap with one entry per measurement, but the
+  // inner loop adds every factor of the state -- a state carrying several fixes (which
+  // eliminateStateByImuMerge now produces) would get duplicate residual blocks. Visit
+  // each state once and skip factors that are already in the problem.
+  for(auto iter = gpsInitMap_.begin(); iter != gpsInitMap_.end(); iter = gpsInitMap_.upper_bound(iter->first)){
     // Iterate all measurements for respective state and actually add residuals
-    State& state = states_.at(init_measurement.first);
+    State& state = states_.at(iter->first);
     for (auto& factor : state.GpsFactors) {
+      if(factor.residualBlockId) continue;
       factor.residualBlockId = problem_->AddResidualBlock(factor.errorTerm.get(), cauchyGpsLossFunctionPtr_.get(),
         state.pose->parameters(),state.speedAndBias->parameters(), state.T_GW->parameters());
     }

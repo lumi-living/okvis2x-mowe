@@ -183,6 +183,10 @@ int main(int argc, char **argv)
       estimator.writeFinalTrajectoryCsv();
       if(parameters.gps){
         estimator.writeGlobalTrajectoryCsv(savePath+"/okvis2-" + mode + "-global-final_trajectory.csv");
+        // mow-e (T-0117): IMU origin in G (what an IMU-pose ground truth compares to)
+        // and the GNSS bookkeeping next to the trajectories.
+        estimator.writeGlobalTrajectoryCsv(savePath+"/okvis2-" + mode + "-global_trajectory.csv", false);
+        estimator.writeGnssStatsJson(savePath+"/gnss_stats.json");
       }
       estimator.setFinalTrajectoryCsvFile(savePath+"/okvis2-" + mode + "-final-ba_trajectory.csv", isWriteRpg);
       if(parameters.estimator.do_final_ba) {

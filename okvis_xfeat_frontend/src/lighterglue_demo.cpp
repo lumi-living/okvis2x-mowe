@@ -158,10 +158,11 @@ int main(int argc, char** argv) {
   const int iters = std::atoi(get("--iters", "200").c_str());
   const int warmup = std::atoi(get("--warmup", "10").c_str());
   const float nn_threshold = std::strtof(get("--nn-threshold", "0.25").c_str(), nullptr);
-  // px, full-res; ticket: rectified fixture → |Δy| ≤ 2 px. NB: the engine
-  // emits integer keypoints at its own resolution, so at 640x384 on a 1280x800
-  // image the vertical pitch is 800/384 = 2.083 px — one-row neighbours miss a
-  // 2 px tolerance by 0.08 px; the *_1row keys below count them (T-0114 NOTES).
+  // px, full-res; ticket: rectified fixture → |Δy| ≤ 2 px. Needs the T-0114
+  // sub-pixel "offsets" engine output: with integer keypoints at 640x384 the
+  // vertical pitch on a 1280x800 image is 800/384 = 2.083 px, so one-row
+  // neighbours miss a 2 px tolerance by 0.08 px (0.83 vs 0.96 measured); the
+  // *_1row keys and the row histogram below make that visible either way.
   const float epi_tol = std::strtof(get("--epi-tol", "2.0").c_str(), nullptr);
   if (engine.empty() || xfeat_engine.empty() || left.empty() || right.empty() || iters <= warmup) {
     std::cerr << "usage: lighterglue_demo --engine lg.plan --xfeat-engine xfeat.plan --left L.png "
@@ -253,6 +254,7 @@ int main(int argc, char** argv) {
   kv("k", std::to_string(K));
   kv("io_names_match", std::to_string(int(lg.io_names_match())));
   kv("xfeat_pair_ms", std::to_string(xfeat_ms));
+  kv("xfeat_subpixel", std::to_string(int(fe.has_offsets())));
   kv("left_keypoints", std::to_string(sl.size()));
   kv("right_keypoints", std::to_string(sr.size()));
   kv("staged_left", std::to_string(pm.staged_a));

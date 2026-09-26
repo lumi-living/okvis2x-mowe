@@ -25,6 +25,7 @@ struct EngineOutputs {
   const std::int32_t* keypoints = nullptr;  ///< [B x K x 2] int32 (x,y) engine px
   const float* scores = nullptr;            ///< [B x K]     -1 in padding slots
   const float* descriptors = nullptr;       ///< [B x K x 64]
+  const float* offsets = nullptr;           ///< [B x K x 2] sub-px (dx,dy) in (-1,1) engine px, or nullptr (pre-T-0114 engine)
   std::uint32_t count = 0;                  ///< K (static top-K)
   std::uint32_t batch = 0;                  ///< B
 };
@@ -50,8 +51,11 @@ class TensorRTEngine {
 
   /// True when the engine's I/O tensors are exactly the export.py contract:
   /// input "images" float [B,1,H,W]; outputs "keypoints" int32 [B,K,2],
-  /// "descriptors" float [B,K,64], "scores" float [B,K]. // T-0111
+  /// "descriptors" float [B,K,64], "scores" float [B,K], plus the optional
+  /// "offsets" float [B,K,2] sub-pixel refinement (T-0114). // T-0111
   bool io_names_match() const noexcept;
+  /// True when the engine emits the T-0114 "offsets" output.
+  bool has_offsets() const noexcept;
   /// "name:dtype:dims" per I/O tensor, in engine order (diagnostics/JSON).
   const std::vector<std::string>& tensor_summary() const noexcept;
 

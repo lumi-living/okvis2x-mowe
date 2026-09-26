@@ -54,6 +54,7 @@ CMake package, so OKVIS finds it without ROS).
 | CUDA preprocess kernel (`preprocess.cu`, pitched mono u8 → bilinear resize 1280x800→640x384 → raw-0..255 NCHW float, one batch slot per eye) | ✅ on-device, T-0111 (`out/agent/T-0111/device/demo.json`) |
 | TensorRT 10.3 named I/O (`getTensorShape/DataType`, `setTensorAddress`, `enqueueV3`), batch=2 stereo, contract check `io_names_match` (`TensorRTEngine.cpp`) | ✅ on-device, T-0111 |
 | Device→host readback into `FrameFeatures`: −1 padding strip, score threshold, scale-back to full-res px, unit norm (`FrameFeaturesUtil.hpp`, gtest `test/test_frame_features.cpp`) | ✅ on-device + qemu, T-0111 |
+| Sub-pixel keypoints: optional 4th engine output `offsets[B,K,2]` (3×3 heatmap centre of mass, `export.py` T-0114) added to the int32 peak before the scale-back; engines without it still load (`has_offsets()`) | ✅ T-0114 — lifts the fixture-pair epipolar inlier ratio (\|Δv\| ≤ 2 px) from 0.83 to ≥ 0.85 (host prototype 0.96) |
 | `xfeat_frontend_demo --engine --left --right --iters --json` (PNG pair, pinned host buffers, mean/p99 per pair) | ✅ 6.5 ms mean / 7.0 ms p99 per stereo pair, 640x384 k1024 FP16, Orin Nano MAXN_SUPER (T-0111) |
 | `.plan` engines from `trtexec` (`xfeat_*.plan`, `lighterglue_k512_*.plan`) | ✅ on device (`/home/mowe/agent/engines`, T-0110) |
 | OKVIS `MultiFrame` hand-off (detect/describe + float matching) | ✅ ADR-0040 stage A (`okvis_frontend`, `USE_MOWE_XFEAT`) |

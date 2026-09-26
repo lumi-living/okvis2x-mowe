@@ -40,7 +40,7 @@ struct XFeatFrontend::Impl {
   std::uint8_t* d_src_u8 = nullptr;  // host-upload staging, B slots of src_w*src_h
   std::uint32_t src_w = 0, src_h = 0;  // staging dims (reallocated on change)
   std::vector<std::int32_t> h_keypoints;
-  std::vector<float> h_scores, h_descriptors;
+  std::vector<float> h_scores, h_descriptors, h_offsets;
   struct Slot {  // what went into each batch slot this round
     bool used = false;
     std::uint32_t w = 0, h = 0;  // source dims (for the scale-back)
@@ -127,6 +127,11 @@ struct XFeatFrontend::Impl {
                     cudaMemcpyDeviceToHost, s());
     cudaMemcpyAsync(h_descriptors.data(), o.descriptors,
                     h_descriptors.size() * sizeof(float), cudaMemcpyDeviceToHost, s());
+    if (o.offsets) {  // T-0114 sub-pixel refinement (absent on older engines)
+      h_offsets.resize(std::size_t(B) * K * 2);
+      cudaMemcpyAsync(h_offsets.data(), o.offsets, h_offsets.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, s());
+    }
     if (cudaStreamSynchronize(s()) != cudaSuccess) {
       std::cerr << "[xfeat] CUDA error: " << cudaGetErrorString(cudaGetLastError()) << "\n";
       return false;
@@ -137,7 +142,8 @@ struct XFeatFrontend::Impl {
                                              cfg.input_width, cfg.input_height);
       assemble_stream(&h_keypoints[std::size_t(b) * K * 2], &h_scores[std::size_t(b) * K],
                       &h_descriptors[std::size_t(b) * K * kDescriptorDim], K, scale,
-                      cfg.score_threshold, out[b]);
+                      cfg.score_threshold, out[b],
+                      o.offsets ? &h_offsets[std::size_t(b) * K * 2] : nullptr);
       slots[b].used = false;
     }
     return true;
@@ -181,6 +187,7 @@ void XFeatFrontend::input_dims(std::uint32_t& width, std::uint32_t& height) cons
 std::uint32_t XFeatFrontend::batch() const noexcept { return impl_->engine.batch(); }
 std::uint32_t XFeatFrontend::max_keypoints() const noexcept { return impl_->engine.topk(); }
 bool XFeatFrontend::io_names_match() const noexcept { return impl_->engine.io_names_match(); }
+bool XFeatFrontend::has_offsets() const noexcept { return impl_->engine.has_offsets(); }
 std::vector<std::string> XFeatFrontend::tensor_summary() const {
   return impl_->engine.tensor_summary();
 }

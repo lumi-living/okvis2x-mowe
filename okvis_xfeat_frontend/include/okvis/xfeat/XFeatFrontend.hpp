@@ -91,6 +91,9 @@ class XFeatFrontend {
 
   /// Engine I/O tensors match the export.py contract (names, dtypes, ranks).
   bool io_names_match() const noexcept;
+  /// Engine emits the T-0114 sub-pixel "offsets" output (keypoints_px are
+  /// then refined, not integer engine pixels scaled up).
+  bool has_offsets() const noexcept;
   /// "name:dtype:dims" per I/O tensor (diagnostics).
   std::vector<std::string> tensor_summary() const;
 

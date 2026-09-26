@@ -102,6 +102,24 @@ TEST(FrameFeatures, ScaleBackToFullRes) {
   EXPECT_NEAR(sf.keypoints_px[0].v, 104.7083f, 1e-3f);
 }
 
+TEST(FrameFeatures, SubPixelOffsetsShiftKeypoints) {
+  // T-0114: engine "offsets" refine the integer peak before the scale-back;
+  // a null pointer (pre-T-0114 engine) keeps the integer position.
+  const ResizeScale s = resize_scale(1280, 800, 640, 384);
+  std::int32_t kp[4] = {100, 50, 7, 9};
+  float sc[2] = {0.9f, 0.9f}, of[4] = {0.25f, -0.5f, 0.f, 0.f};
+  std::vector<float> de(2 * kDescriptorDim, 0.f);
+  StreamFeatures sf, plain;
+  assemble_stream(kp, sc, de.data(), 2, s, 0.f, sf, of);
+  assemble_stream(kp, sc, de.data(), 2, s, 0.f, plain);
+  ASSERT_EQ(sf.size(), 2u);
+  EXPECT_FLOAT_EQ(sf.keypoints_px[0].u, (100.25f + 0.5f) * 2.f - 0.5f);
+  EXPECT_NEAR(sf.keypoints_px[0].v, (49.5f + 0.5f) * s.sy - 0.5f, 1e-4f);
+  EXPECT_FLOAT_EQ(sf.keypoints_px[1].u, plain.keypoints_px[1].u);  // zero offset == integer path
+  EXPECT_FLOAT_EQ(plain.keypoints_px[0].u, 200.5f);
+  EXPECT_NEAR(sf.keypoints_px[0].v - plain.keypoints_px[0].v, -0.5f * s.sy, 1e-4f);
+}
+
 TEST(FrameFeatures, UnitNormCheck) {
   Tensors t = make(50, 0);
   EXPECT_LT(max_unit_norm_deviation(t.de), 1e-5f);

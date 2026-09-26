@@ -35,22 +35,27 @@ inline ResizeScale resize_scale(std::uint32_t full_w, std::uint32_t full_h,
   return {float(full_w) / float(eng_w), float(full_h) / float(eng_h)};
 }
 
+inline Keypoint to_full_res(float x_eng, float y_eng, ResizeScale s) {
+  return {(x_eng + 0.5f) * s.sx - 0.5f, (y_eng + 0.5f) * s.sy - 0.5f};
+}
 inline Keypoint to_full_res(std::int32_t x_eng, std::int32_t y_eng,
                             ResizeScale s) {
-  return {(float(x_eng) + 0.5f) * s.sx - 0.5f,
-          (float(y_eng) + 0.5f) * s.sy - 0.5f};
+  return to_full_res(float(x_eng), float(y_eng), s);
 }
 
 /// Build `out` from one batch slot of the engine outputs (export.py contract:
 /// keypoints int32 [K,2] (x,y) in engine pixels, scores [K] with -1 in padding
-/// slots, descriptors [K,64] L2-normalised). Rows with score < 0 (padding) or
-/// below `score_threshold` are dropped. Returns the number of padding rows
-/// (score < 0) that were stripped; `out.padding_rows` gets the same value.
+/// slots, descriptors [K,64] L2-normalised, optional offsets [K,2] sub-pixel
+/// (dx,dy) in engine px — T-0114, nullptr for a pre-T-0114 engine). Rows with
+/// score < 0 (padding) or below `score_threshold` are dropped. Returns the
+/// number of padding rows (score < 0) that were stripped; `out.padding_rows`
+/// gets the same value.
 inline std::uint32_t assemble_stream(const std::int32_t* kp_xy,
                                      const float* scores, const float* desc,
                                      std::uint32_t K, ResizeScale scale,
                                      float score_threshold,
-                                     StreamFeatures& out) {
+                                     StreamFeatures& out,
+                                     const float* offsets = nullptr) {
   out.keypoints_px.clear();
   out.scores.clear();
   out.descriptors.clear();
@@ -65,7 +70,9 @@ inline std::uint32_t assemble_stream(const std::int32_t* kp_xy,
       continue;
     }
     if (s < score_threshold) continue;
-    out.keypoints_px.push_back(to_full_res(kp_xy[2 * i], kp_xy[2 * i + 1], scale));
+    const float dx = offsets ? offsets[2 * i] : 0.f, dy = offsets ? offsets[2 * i + 1] : 0.f;
+    out.keypoints_px.push_back(
+        to_full_res(float(kp_xy[2 * i]) + dx, float(kp_xy[2 * i + 1]) + dy, scale));
     out.scores.push_back(s);
     const float* d = desc + std::size_t(i) * kDescriptorDim;
     out.descriptors.insert(out.descriptors.end(), d, d + kDescriptorDim);

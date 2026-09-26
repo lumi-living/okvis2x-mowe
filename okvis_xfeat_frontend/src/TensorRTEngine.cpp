@@ -13,6 +13,8 @@
  *                                  output overflows the index-decode in fp16)
  *   output "descriptors" [B,K,64]  float
  *   output "scores"      [B,K]     float, -1 in padding slots
+ *   output "offsets"     [B,K,2]   float sub-pixel (dx,dy) in (-1,1) engine px
+ *                                  (T-0114; optional — older engines lack it)
  */
 #include "TensorRTEngine.hpp"
 
@@ -81,11 +83,13 @@ struct TensorRTEngine::Impl {
   void* d_keypoints = nullptr;
   void* d_scores = nullptr;
   void* d_descriptors = nullptr;
+  void* d_offsets = nullptr;  // nullptr when the engine has no "offsets" output
 
   ~Impl() {
     cudaFree(d_keypoints);
     cudaFree(d_scores);
     cudaFree(d_descriptors);
+    cudaFree(d_offsets);
     delete context;  // TRT 10: objects are deleted, not destroy()'d.
     delete engine;
     delete runtime;
@@ -118,7 +122,7 @@ bool TensorRTEngine::load(const std::string& engine_path, int cuda_device) {
   // Introspect named I/O against the export.py contract, allocate output
   // buffers, cache input dims + batch + top-K.
   using nvinfer1::DataType;
-  bool in_ok = false, kp_ok = false, sc_ok = false, de_ok = false;
+  bool in_ok = false, kp_ok = false, sc_ok = false, de_ok = false, of_ok = true;
   int n_io = 0;
   const int n = impl_->engine->getNbIOTensors();
   for (int i = 0; i < n; ++i) {
@@ -157,12 +161,16 @@ bool TensorRTEngine::load(const std::string& engine_path, int cuda_device) {
     } else if (sname == "descriptors") {
       impl_->d_descriptors = ptr;
       de_ok = t == DataType::kFLOAT && d.nbDims == 3 && d.d[2] == 64;
+    } else if (sname == "offsets") {  // T-0114 sub-pixel refinement
+      impl_->d_offsets = ptr;
+      of_ok = t == DataType::kFLOAT && d.nbDims == 3 && d.d[2] == 2;
     } else {
       std::cerr << "[trt] unexpected output tensor '" << name << "'\n";
       cudaFree(ptr);
     }
   }
-  impl_->io_ok = in_ok && kp_ok && sc_ok && de_ok && n_io == 4;
+  impl_->io_ok = in_ok && kp_ok && sc_ok && de_ok && of_ok && (n_io == 4 || n_io == 5);
+  if (!impl_->d_offsets) std::cerr << "[trt] engine has no 'offsets' output — integer keypoints (pre-T-0114 export)\n";
   for (const auto& s : impl_->summary) std::cerr << "[trt] " << s << "\n";
   if (!impl_->io_ok) std::cerr << "[trt] WARNING: I/O tensors do not match the export.py contract\n";
 
@@ -182,6 +190,7 @@ void TensorRTEngine::input_dims(std::uint32_t& w, std::uint32_t& h) const noexce
 std::uint32_t TensorRTEngine::batch() const noexcept { return impl_->batch; }
 std::uint32_t TensorRTEngine::topk() const noexcept { return impl_->topk; }
 bool TensorRTEngine::io_names_match() const noexcept { return impl_->io_ok; }
+bool TensorRTEngine::has_offsets() const noexcept { return impl_->d_offsets != nullptr; }
 const std::vector<std::string>& TensorRTEngine::tensor_summary() const noexcept {
   return impl_->summary;
 }
@@ -195,6 +204,7 @@ bool TensorRTEngine::infer(const void* input_device_ptr, void* stream,
   impl_->context->setTensorAddress("keypoints", impl_->d_keypoints);
   impl_->context->setTensorAddress("scores", impl_->d_scores);
   impl_->context->setTensorAddress("descriptors", impl_->d_descriptors);
+  if (impl_->d_offsets) impl_->context->setTensorAddress("offsets", impl_->d_offsets);
 
   if (!impl_->context->enqueueV3(static_cast<cudaStream_t>(stream))) {
     return false;
@@ -203,6 +213,7 @@ bool TensorRTEngine::infer(const void* input_device_ptr, void* stream,
   out.keypoints = static_cast<const std::int32_t*>(impl_->d_keypoints);
   out.scores = static_cast<const float*>(impl_->d_scores);
   out.descriptors = static_cast<const float*>(impl_->d_descriptors);
+  out.offsets = static_cast<const float*>(impl_->d_offsets);
   out.count = impl_->topk;
   out.batch = impl_->batch;
   return true;  // outputs are on `stream`; caller syncs before readback
@@ -231,6 +242,7 @@ void TensorRTEngine::input_dims(std::uint32_t& w, std::uint32_t& h) const noexce
 std::uint32_t TensorRTEngine::batch() const noexcept { return 0; }
 std::uint32_t TensorRTEngine::topk() const noexcept { return 0; }
 bool TensorRTEngine::io_names_match() const noexcept { return false; }
+bool TensorRTEngine::has_offsets() const noexcept { return false; }
 const std::vector<std::string>& TensorRTEngine::tensor_summary() const noexcept {
   return impl_->summary;
 }

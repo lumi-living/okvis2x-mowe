@@ -4,13 +4,20 @@
 # Buildable two ways:
 #   * as an OKVIS submodule: add_subdirectory() from the top CMakeLists behind
 #     option(USE_MOWE_XFEAT) — Eigen3::Eigen already exists there.
-#   * standalone: cmake -S okvis_xfeat_frontend -B build  (finds Eigen3 itself).
+#   * standalone: cmake -S okvis_xfeat_frontend -B build  (finds Eigen3 itself),
+#     and as its own colcon package (package.xml, build_type cmake) — this is how
+#     tools/cross builds and installs xfeat_frontend_demo + the gtest (T-0111).
 #
 # mowe_camera_core is found via its vanilla CMake package config (ament-free).
 cmake_minimum_required(VERSION 3.16)
 project(okvis_xfeat_frontend CXX)
 
 option(USE_TENSORRT "Build with the real TensorRT/CUDA inference path" OFF)
+option(BUILD_TESTING "Build the CPU gtest (standalone builds only)" OFF)
+set(_xfeat_standalone OFF)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(_xfeat_standalone ON)
+endif()
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -87,9 +94,25 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     FILES_MATCHING PATTERN "*.hpp")
 endif()
 
-# Skeleton end-to-end demo (camera → frontend). No ROS.
+# End-to-end demo (camera or PNG pair → frontend → counts/timing JSON). No ROS.
 add_executable(xfeat_frontend_demo src/xfeat_frontend_demo.cpp)
 target_link_libraries(xfeat_frontend_demo PRIVATE okvis_xfeat_frontend)
+if(_xfeat_standalone)
+  include(GNUInstallDirs)
+  install(TARGETS xfeat_frontend_demo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(BUILD_TESTING)
+    # CPU-only helpers test; installed to lib/<pkg>/ so tools/agent/test-device.sh
+    # and test-host.sh --qemu find it (T-0111).
+    find_package(GTest REQUIRED)
+    enable_testing()
+    add_executable(test_frame_features test/test_frame_features.cpp)
+    target_include_directories(test_frame_features PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_frame_features PRIVATE GTest::gtest_main)
+    target_compile_features(test_frame_features PRIVATE cxx_std_17)
+    add_test(NAME test_frame_features COMMAND test_frame_features)
+    install(TARGETS test_frame_features RUNTIME DESTINATION lib/${PROJECT_NAME})
+  endif()
+endif()
 
 # Optional keypoint visualization (draws kpts, saves PNG / imshow). OpenCV ships
 # with JetPack; if missing the demo still builds (prints counts only).

@@ -33,8 +33,9 @@ struct Keypoint {
 struct StreamFeatures {
   std::string stream_id;
 
-  /// Keypoint pixel coordinates (u,v) in the ORIGINAL image frame (i.e. already
-  /// mapped back from the network's padded/normalised input). Size == N.
+  /// Keypoint pixel coordinates (u,v) in the ORIGINAL (full-resolution) image
+  /// frame, i.e. already scaled back from the engine's input resolution —
+  /// see FrameFeaturesUtil.hpp ResizeScale for the exact mapping. Size == N.
   std::vector<Keypoint> keypoints_px;
 
   /// Per-keypoint reliability/score from the XFeat heatmap. Size == N.
@@ -44,6 +45,10 @@ struct StreamFeatures {
   /// FLOAT descriptors (cosine/L2 matching), NOT binary — the OKVIS adapter must
   /// use the float-descriptor matching path, not BRISK Hamming. See README.
   std::vector<float> descriptors;
+
+  /// Static-export padding slots (score == -1) that were stripped while
+  /// building this stream (T-0111). Diagnostic only.
+  std::uint32_t padding_rows = 0;
 
   std::size_t size() const noexcept { return keypoints_px.size(); }
 };

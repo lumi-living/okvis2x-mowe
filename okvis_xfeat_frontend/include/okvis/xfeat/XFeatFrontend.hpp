@@ -9,9 +9,12 @@
  *        ▼
  *   map DMABUF/NvBufSurface → CUDA      (mowe_camera/gpu_map.hpp, zero-copy)
  *        ▼
- *   CUDA preprocess (cast/normalise/pad → engine input binding)   [TODO kernel]
+ *   CUDA preprocess (bilinear 1280x800 → 640x384, u8 → raw-0..255 float,
+ *                    batch slot per eye)                    (preprocess.cu)
  *        ▼
- *   TensorRT XFeat engine enqueue       (TensorRTEngine)
+ *   TensorRT XFeat engine enqueueV3, batch=2 (L,R)         (TensorRTEngine)
+ *        ▼
+ *   D2H readback, padding strip, scale back to full-res px (FrameFeaturesUtil)
  *        ▼
  *   okvis::xfeat::FrameFeatures         → OKVIS adapter (next step)
  *
@@ -26,6 +29,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "okvis/xfeat/XFeatFeatures.hpp"
 
@@ -43,9 +47,10 @@ struct XFeatConfig {
   /// (see ../xfeat_lightglue_onnx + trtexec). Empty → run in stub mode.
   std::string engine_path;
 
-  /// The static input dims the engine was built for (TensorRT prefers static
-  /// shapes; the camera frames are letterboxed/padded to this). 0 → infer from
-  /// the engine bindings at load.
+  /// The static input dims the engine was built for. Camera frames of any size
+  /// are bilinearly resized to this on the GPU (KB 03: 640x384 for the
+  /// 1280x800 OV9281) and keypoints are scaled back to full-res pixels.
+  /// 0 → infer from the engine bindings at load.
   std::uint32_t input_width = 0;
   std::uint32_t input_height = 0;
 
@@ -80,6 +85,21 @@ class XFeatFrontend {
   /// The static input dims of the loaded engine (0/0 in stub mode).
   void input_dims(std::uint32_t& width, std::uint32_t& height) const noexcept;
 
+  /// Engine batch (2 for the stereo export) / top-K; 0 in stub mode.
+  std::uint32_t batch() const noexcept;
+  std::uint32_t max_keypoints() const noexcept;
+
+  /// Engine I/O tensors match the export.py contract (names, dtypes, ranks).
+  bool io_names_match() const noexcept;
+  /// "name:dtype:dims" per I/O tensor (diagnostics).
+  std::vector<std::string> tensor_summary() const;
+
+  /// Page-lock a caller-owned host buffer (cudaHostRegister) so uploads from it
+  /// are DMA'd instead of staged (KB 04 §3.1, measured in T-0006). Optional;
+  /// unregistered buffers still work. No-op/false in stub mode.
+  bool register_host_buffer(const void* ptr, std::size_t bytes);
+  void unregister_host_buffer(const void* ptr);
+
   /// Run XFeat on every plane of `bundle`. On the Jetson zero-copy path each
   /// plane's NvBufSurface is mapped straight to CUDA (no host round-trip); on a
   /// host-only build it falls back to an upload (TODO). Thread-compatible: call
@@ -88,11 +108,18 @@ class XFeatFrontend {
 
   /// Run XFeat on a single host-resident mono8 image (the ROS-subscriber /
   /// cv::Mat path — no FrameBundle involved). `data` points at `height` rows of
-  /// `width` pixels, `stride_bytes` apart. Dims must equal the engine's static
-  /// input dims. Same threading contract as extract().
+  /// `width` pixels, `stride_bytes` apart; any size, resized on the GPU. Uses
+  /// batch slot 0 only. Same threading contract as extract().
   StreamFeatures extract_image(const std::uint8_t* data,
                                std::uint32_t stride_bytes,
                                std::uint32_t width, std::uint32_t height);
+
+  /// Run XFeat on a host-resident stereo pair in ONE batch-2 enqueue
+  /// (KB 03 §batching). Both images share `width` x `height`. Streams are
+  /// "left" and "right"; keypoints in full-res pixels. // T-0111
+  FrameFeatures extract_pair(const std::uint8_t* left, std::uint32_t left_stride,
+                             const std::uint8_t* right, std::uint32_t right_stride,
+                             std::uint32_t width, std::uint32_t height);
 
  private:
   struct Impl;

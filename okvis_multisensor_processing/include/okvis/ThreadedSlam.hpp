@@ -177,6 +177,9 @@ class ThreadedSlam : public ViInterface {
    */
   virtual void setBlocking(bool blocking) override final;
 
+  /// \brief Read access to the frontend (Mow-e T-0113: stats on exit).
+  const okvis::Frontend& frontend() const { return frontend_; }
+
   /// \brief Runs main processing iteration, call in your main loop.
   bool processFrame();
 

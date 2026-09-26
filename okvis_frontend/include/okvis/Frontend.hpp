@@ -260,6 +260,25 @@ class Frontend : public ViFrontendInterface {
   /// \brief Bytes per keypoint descriptor: 48 (BRISK) or 256 (XFeat 64 float).
   size_t descriptorBytes() const;
 
+  /// \brief Front-end statistics (Mow-e T-0113), accumulated over the run and
+  ///        written by the apps on exit as frontend_stats.json. Counts are per
+  ///        okvis::Frame (one camera image); frontendMs is per MultiFrame.
+  struct Stats {
+    std::vector<double> frontendMs; ///< detect+describe wall time per MultiFrame [ms]
+    uint64_t keypoints = 0;         ///< keypoints summed over camera frames
+    uint64_t frames = 0;            ///< camera frames (images) detected on
+    uint64_t stereoMatches = 0;     ///< accepted L-R stereo matches (matchStereo)
+    uint64_t stereoCalls = 0;       ///< matchStereo pair evaluations (keyframes)
+    uint64_t keyframeMatches = 0;   ///< 3d2d matches to the map (matchToMap)
+    uint64_t keyframeCalls = 0;     ///< matchToMap calls (every frame after the first)
+    uint64_t loopClosures = 0;      ///< accepted loop closures
+  };
+  /// \brief Snapshot of the statistics.
+  Stats stats() const;
+  /// \brief Write stats() as JSON (mean/p99 of frontendMs, per-frame means,
+  ///        engine_loaded flag). Returns false when the file cannot be written.
+  bool writeStatsJson(const std::string& path) const;
+
   /// \brief Descriptor distance dispatch (okvis/DescriptorDistance.hpp): BRISK
   ///        Hamming popcount, or cosine distance (1 - dot, unit descriptors)
   ///        when floatDescriptors() is set. matching_threshold is interpreted
@@ -343,6 +362,9 @@ private:
                                 std::vector<int>& matchBForA);
 
   bool floatDescriptors_ = false; ///< Descriptor metric: float/cosine (true) or BRISK/Hamming.
+
+  mutable std::mutex statsMutex_; ///< Guards stats_ (detection threads + processing thread).
+  Stats stats_;                   ///< Accumulated front-end statistics (T-0113).
 
   ///@}
 

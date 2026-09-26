@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>okvis_apps</name>
+  <version>0.1.0</version>
+  <description>OKVIS2-X dataset apps as a colcon target (mow-e T-0113). The app binaries (okvis_app_synchronous, okvis2x_app_synchronous, dbow2_test) are compiled by the okvis superbuild (BUILD_APPS=ON) because they link non-exported superbuild targets (SRL::Supereight2); this package anchors the dependency so `--packages-up-to okvis_apps` builds them, and installs the helper scripts.</description>
+  <maintainer email="eemil@haaparanta.net">Eemil Haaparanta</maintainer>
+  <license>BSD-3-Clause</license>
+  <depend>okvis</depend>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

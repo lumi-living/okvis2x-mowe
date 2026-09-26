@@ -59,6 +59,10 @@
 #include <okvis/DescriptorDistance.hpp>
 
 #include <numeric>
+#include <algorithm>
+#include <chrono>
+#include <fstream>
+#include <iomanip>
 
 #ifdef OKVIS_USE_MOWE_XFEAT
 // Mow-e XFeat-on-TensorRT frontend (ADR-0040): replaces BRISK detect+describe;
@@ -174,9 +178,15 @@ Frontend::Frontend(size_t numCameras, std::string dBowVocDir)
 ///        populated in USE_MOWE_XFEAT builds).
 struct Frontend::XFeatRuntime {
 #ifdef OKVIS_USE_MOWE_XFEAT
-  /// One engine per camera: detectAndDescribe runs per-camera in parallel and
-  /// a TensorRT execution context + stream pair is not thread-safe.
+  /// Stereo rig (2 cameras): ONE batch-2 engine, run once per MultiFrame on
+  /// the (L,R) pair under pairMutex (T-0113; the second camera's detection
+  /// thread finds the pair done and returns). Otherwise one engine per camera:
+  /// detectAndDescribe runs per-camera in parallel and a TensorRT execution
+  /// context + stream pair is not thread-safe.
   std::vector<std::unique_ptr<xfeat::XFeatFrontend>> engines;
+  std::mutex pairMutex;
+  bool pairDone = false;      ///< pairDoneStamp valid
+  okvis::Time pairDoneStamp;  ///< MultiFrame timestamp the pair was last run on
   /// Pair matcher for stereo / motion stereo (stage B/C); null → cosine NN.
   std::unique_ptr<xfeat::LighterGlueMatcher> lighterGlue;
   /// One matcher context — serialise match() calls (defensive; the matching
@@ -194,7 +204,8 @@ void Frontend::setXFeatParameters(const XFeatParameters& xfeat) {
   }
 #ifdef OKVIS_USE_MOWE_XFEAT
   std::unique_ptr<XFeatRuntime> runtime(new XFeatRuntime());
-  for (size_t i = 0; i < numCameras_; ++i) {
+  const size_t numEngines = numCameras_ == 2 ? 1 : numCameras_;
+  for (size_t i = 0; i < numEngines; ++i) {
     xfeat::XFeatConfig cfg;
     cfg.engine_path = xfeat.engine;
     cfg.score_threshold = float(xfeat.score_threshold);
@@ -261,29 +272,22 @@ Frontend::DBoW& Frontend::dBow() {
   return *dBow_;
 }
 
-bool Frontend::detectAndDescribeXFeat(
-    size_t cameraIndex, std::shared_ptr<okvis::MultiFrame> frameOut) {
 #ifdef OKVIS_USE_MOWE_XFEAT
-  xfeat::XFeatFrontend& engine = *xfeatRuntime_->engines.at(cameraIndex);
-  const cv::Mat image = frameOut->image(cameraIndex);
-  OKVIS_ASSERT_TRUE(Exception, image.type() == CV_8UC1,
-                    "XFeat frontend expects mono8 images")
-  xfeat::StreamFeatures features =
-      engine.extract_image(image.data, std::uint32_t(image.step),
-                           std::uint32_t(image.cols), std::uint32_t(image.rows));
-
+/// \brief Store one camera's XFeat features (strongest maxKeypoints) into the
+///        MultiFrame: keypoints, CV_32F [n x 64] descriptors, back-projections.
+static void injectXFeatFeatures(const xfeat::StreamFeatures& features,
+                                size_t cameraIndex, size_t maxKeypoints,
+                                float keypointSize, okvis::MultiFrame& frameOut) {
   // Keep only the strongest max_num_keypoints, like the BRISK detector does.
   std::vector<size_t> order(features.size());
   std::iota(order.begin(), order.end(), size_t(0));
-  const size_t numKeypoints =
-      std::min(features.size(), briskDetectionMaximumKeypoints_);
+  const size_t numKeypoints = std::min(features.size(), maxKeypoints);
   if (numKeypoints < features.size()) {
     std::partial_sort(order.begin(), order.begin() + numKeypoints, order.end(),
                       [&features](size_t a, size_t b) {
                         return features.scores[a] > features.scores[b];
                       });
   }
-
   std::vector<cv::KeyPoint> keypoints;
   keypoints.reserve(numKeypoints);
   cv::Mat descriptors(int(numKeypoints), kXFeatDescriptorDim, CV_32FC1);
@@ -292,16 +296,72 @@ bool Frontend::detectAndDescribeXFeat(
     // XFeat has no scale; keypoint_size sets the observation uncertainty
     // (sigma = size/focalLength * 0.125 in the matching stages).
     keypoints.emplace_back(features.keypoints_px[i].u,
-                           features.keypoints_px[i].v,
-                           float(xfeatParams_.keypoint_size), -1.f,
+                           features.keypoints_px[i].v, keypointSize, -1.f,
                            features.scores[i]);
     std::memcpy(descriptors.ptr<float>(int(n)),
                 &features.descriptors[i * xfeat::kDescriptorDim],
                 sizeof(float) * xfeat::kDescriptorDim);
   }
-  frameOut->resetKeypoints(cameraIndex, keypoints);
-  frameOut->resetDescriptors(cameraIndex, descriptors);
-  frameOut->computeBackProjections(cameraIndex);
+  frameOut.resetKeypoints(cameraIndex, keypoints);
+  frameOut.resetDescriptors(cameraIndex, descriptors);
+  frameOut.computeBackProjections(cameraIndex);
+}
+#endif
+
+bool Frontend::detectAndDescribeXFeat(
+    size_t cameraIndex, std::shared_ptr<okvis::MultiFrame> frameOut) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  const float keypointSize = float(xfeatParams_.keypoint_size);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto recordMs = [&](uint64_t keypoints, uint64_t frames) {
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    stats_.frontendMs.push_back(ms);
+    stats_.keypoints += keypoints;
+    stats_.frames += frames;
+  };
+
+  // Stereo pair: one batch-2 enqueue per MultiFrame (T-0113, KB 03 §batching).
+  if (numCameras_ == 2 && frameOut->numFrames() == 2 &&
+      !frameOut->image(0).empty() && !frameOut->image(1).empty()) {
+    std::lock_guard<std::mutex> lock(xfeatRuntime_->pairMutex);
+    if (xfeatRuntime_->pairDone &&
+        xfeatRuntime_->pairDoneStamp == frameOut->timestamp()) {
+      return true;  // the other camera's detection thread already ran the pair
+    }
+    const cv::Mat left = frameOut->image(0), right = frameOut->image(1);
+    OKVIS_ASSERT_TRUE(Exception,
+                      left.type() == CV_8UC1 && right.type() == CV_8UC1 &&
+                          left.size() == right.size(),
+                      "XFeat pair path expects two equal-size mono8 images")
+    xfeat::FrameFeatures pair = xfeatRuntime_->engines.front()->extract_pair(
+        left.data, std::uint32_t(left.step), right.data,
+        std::uint32_t(right.step), std::uint32_t(left.cols),
+        std::uint32_t(left.rows));
+    for (size_t im = 0; im < 2; ++im) {
+      injectXFeatFeatures(pair.streams.at(im), im,
+                          briskDetectionMaximumKeypoints_, keypointSize,
+                          *frameOut);
+    }
+    xfeatRuntime_->pairDone = true;
+    xfeatRuntime_->pairDoneStamp = frameOut->timestamp();
+    recordMs(frameOut->numKeypoints(0) + frameOut->numKeypoints(1), 2);
+    return true;
+  }
+
+  // Single image (mono rig, or a camera without a partner image).
+  xfeat::XFeatFrontend& engine = *xfeatRuntime_->engines.at(
+      std::min(cameraIndex, xfeatRuntime_->engines.size() - 1));
+  const cv::Mat image = frameOut->image(cameraIndex);
+  OKVIS_ASSERT_TRUE(Exception, image.type() == CV_8UC1,
+                    "XFeat frontend expects mono8 images")
+  xfeat::StreamFeatures features =
+      engine.extract_image(image.data, std::uint32_t(image.step),
+                           std::uint32_t(image.cols), std::uint32_t(image.rows));
+  injectXFeatFeatures(features, cameraIndex, briskDetectionMaximumKeypoints_,
+                      keypointSize, *frameOut);
+  recordMs(frameOut->numKeypoints(cameraIndex), 1);
   return true;
 #else
   (void)cameraIndex;
@@ -469,6 +529,7 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
 #endif
 
   // detect
+  const auto t0 = std::chrono::steady_clock::now();
   frameOut->detect(cameraIndex);
 
   // extract
@@ -477,6 +538,58 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
   // precompute backprojections
   frameOut->computeBackProjections(cameraIndex);
 
+  {
+    // T-0113 stats: BRISK is timed per camera frame (the cameras run in
+    // parallel threads), XFeat per stereo pair — see writeStatsJson.
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    stats_.frontendMs.push_back(ms);
+    stats_.keypoints += frameOut->numKeypoints(cameraIndex);
+    stats_.frames += 1;
+  }
+  return true;
+}
+
+Frontend::Stats Frontend::stats() const {
+  std::lock_guard<std::mutex> lock(statsMutex_);
+  return stats_;
+}
+
+bool Frontend::writeStatsJson(const std::string& path) const {
+  const Stats s = stats();
+  std::vector<double> ms = s.frontendMs;
+  std::sort(ms.begin(), ms.end());
+  auto pct = [&ms](double p) {
+    return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, size_t(p * double(ms.size())))];
+  };
+  const double mean = ms.empty() ? 0.0
+      : std::accumulate(ms.begin(), ms.end(), 0.0) / double(ms.size());
+  auto ratio = [](uint64_t a, uint64_t b) { return b ? double(a) / double(b) : 0.0; };
+  std::ofstream f(path);
+  if (!f.good()) {
+    LOG(ERROR) << "cannot write frontend stats to " << path;
+    return false;
+  }
+  f << std::setprecision(6) << std::fixed << "{\n"
+    << "  \"engine_loaded\": " << (usingXFeat() ? 1 : 0) << ",\n"
+    << "  \"float_descriptors\": " << (floatDescriptors_ ? 1 : 0) << ",\n"
+    << "  \"frontend\": \"" << (usingXFeat() ? "xfeat" : "brisk") << "\",\n"
+    << "  \"engine\": \"" << (usingXFeat() ? xfeatParams_.engine : "") << "\",\n"
+    << "  \"frontend_calls\": " << ms.size() << ",\n"
+    << "  \"frontend_call_unit\": \"" << (usingXFeat() && numCameras_ == 2 ? "stereo_pair" : "camera_frame") << "\",\n"
+    << "  \"mean_frontend_ms\": " << mean << ",\n"
+    << "  \"p99_frontend_ms\": " << pct(0.99) << ",\n"
+    << "  \"max_frontend_ms\": " << (ms.empty() ? 0.0 : ms.back()) << ",\n"
+    << "  \"frames\": " << s.frames << ",\n"
+    << "  \"mean_keypoints_per_frame\": " << ratio(s.keypoints, s.frames) << ",\n"
+    << "  \"stereo_calls\": " << s.stereoCalls << ",\n"
+    << "  \"mean_stereo_matches\": " << ratio(s.stereoMatches, s.stereoCalls) << ",\n"
+    << "  \"keyframe_match_calls\": " << s.keyframeCalls << ",\n"
+    << "  \"mean_keyframe_matches\": " << ratio(s.keyframeMatches, s.keyframeCalls) << ",\n"
+    << "  \"loop_closures\": " << s.loopClosures << "\n"
+    << "}\n";
+  LOG(INFO) << "frontend stats written to " << path;
   return true;
 }
 
@@ -950,6 +1063,11 @@ bool Frontend::dataAssociationAndInitialization(
         break;
     }
     matchMapTimer.stop();
+    {
+      std::lock_guard<std::mutex> lock(statsMutex_);
+      stats_.keyframeMatches += uint64_t(std::max(0, num3dMatches));
+      ++stats_.keyframeCalls;
+    }
 
     // check tracking quality
     trackingQuality = estimator.trackingQuality(StateId(framesInOut->id()));
@@ -1184,6 +1302,10 @@ bool Frontend::dataAssociationAndInitialization(
         LOG(INFO) << "LOOP CLOSURE: current frame " << framesInOut->id()
                   << ", matching to keyframe " << oldFrame->id() << ", "
                   << loopClosureMatches << " matches, p=" << p << ".";
+        {
+          std::lock_guard<std::mutex> lock(statsMutex_);
+          ++stats_.loopClosures;
+        }
 
         matchLoopClosureTimer.stop();
         // re-decide keyframe:
@@ -2508,6 +2630,7 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
         std::vector<int> lgMatch;
         const bool lgMode =
             lighterGluePairProposals(*multiFrame, im0, *multiFrame, im1, lgMatch);
+        uint64_t numStereoMatches = 0;
         for(size_t k0 = 0; k0 < k0Size; ++k0) {
 
           double distances = briskMatchingThreshold_;
@@ -2577,7 +2700,20 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
             }
           }
 
+          if(floatDescriptors() && !lgMode && distances<briskMatchingThreshold_) {
+            // Mutual-NN on the float path (T-0113, KB 02 stereo row): k0 must
+            // also be the nearest neighbour of k1_match among all k0.
+            const unsigned char* d1 = multiFrame->keypointDescriptor(im1, k1_match);
+            for(size_t k = 0; k < k0Size; ++k) {
+              if(k != k0 && descriptorDist(multiFrame->keypointDescriptor(im0, k), d1) < distances) {
+                distances = briskMatchingThreshold_; // reject: not mutual
+                break;
+              }
+            }
+          }
+
           if(distances<briskMatchingThreshold_) {
+            ++numStereoMatches;
             Eigen::Vector2d pt0, pt1;
             multiFrame->getKeypoint(im0, k0, pt0);
             multiFrame->getKeypoint(im1, k1_match, pt1);
@@ -2648,13 +2784,18 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
             }
           }
         }
+        {
+          std::lock_guard<std::mutex> lock(statsMutex_);
+          stats_.stereoMatches += numStereoMatches;
+          ++stats_.stereoCalls;
+        }
       }
     }
   }
 
   // TODO: for more than 2 cameras check that there were no duplications!
 
-  // TODO: ensure 1-1 matching.
+  // TODO: ensure 1-1 matching (done for the float path above).
 }
 template<class CAMERA_GEOMETRY>
 int Frontend::removeOutliers(Estimator &estimator,

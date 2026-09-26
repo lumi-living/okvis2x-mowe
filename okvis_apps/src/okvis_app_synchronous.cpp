@@ -204,6 +204,8 @@ int main(int argc, char **argv)
         estimator.saveMap();
       }
       LOG(INFO) <<"total processing time " << (okvis::Time::now() - startTime) << " s" << std::endl;
+      // mowe: front-end statistics next to the trajectories (T-0113).
+      estimator.frontend().writeStatsJson(savePath+"/frontend_stats.json");
       break;
     }
 

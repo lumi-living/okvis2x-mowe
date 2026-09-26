@@ -75,6 +75,11 @@ struct RunStats {
   std::atomic<int> engineLoaded{0};
   std::atomic<int> cleanExit{0};
   double rssStartMb = 0, rssPeakMb = 0, rssEndMb = 0;
+  /// RSS once the pipeline is warm: TensorRT/CUDA workspaces and the capture
+  /// buffers land on the first frames (~+140 MB in the first 5 s on the Orin
+  /// Nano), which is allocation, not growth. Growth is measured from here.
+  double rssWarmMb = 0;
+  std::chrono::steady_clock::time_point tWarm;
   std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
   std::string path; ///< empty: disabled
 };
@@ -108,6 +113,9 @@ static void writeStats() {
   const double wallS = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - g_stats.t0).count();
   const uint64_t offered = g_stats.framesCaptured - g_stats.framesDecimated;
+  const double warmS = g_stats.rssWarmMb > 0
+      ? std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats.tWarm).count()
+      : 0.0;
   std::ofstream f(g_stats.path);
   f << "{\n"
     << "  \"frames_captured\": " << g_stats.framesCaptured << ",\n"
@@ -124,9 +132,13 @@ static void writeStats() {
     << "  \"crashes\": " << g_stats.crashes << ",\n"
     << "  \"clean_exit\": " << g_stats.cleanExit << ",\n"
     << "  \"rss_start_mb\": " << g_stats.rssStartMb << ",\n"
+    << "  \"rss_warm_mb\": " << g_stats.rssWarmMb << ",\n"
+    << "  \"warm_s\": " << warmS << ",\n"
     << "  \"rss_peak_mb\": " << g_stats.rssPeakMb << ",\n"
     << "  \"rss_end_mb\": " << g_stats.rssEndMb << ",\n"
     << "  \"rss_growth_mb_per_min\": "
+    << (warmS > 1.0 ? (g_stats.rssEndMb - g_stats.rssWarmMb) / (warmS / 60.0) : 0.0) << ",\n"
+    << "  \"rss_growth_from_start_mb_per_min\": "
     << (wallS > 1.0 ? (g_stats.rssEndMb - g_stats.rssStartMb) / (wallS / 60.0) : 0.0) << ",\n"
     << "  \"wall_s\": " << wallS << "\n"
     << "}\n";
@@ -410,8 +422,10 @@ int main(int argc, char **argv) {
       camera->stop();
     });
 
-    // Main loop (same shape as okvis2x_node) + 1 Hz RSS sampling.
+    // Main loop (same shape as okvis2x_node) + 1 Hz RSS sampling; the growth
+    // baseline is taken 10 s after the camera started (see RunStats).
     auto nextRss = std::chrono::steady_clock::now();
+    const auto warmAt = nextRss + std::chrono::seconds(10);
     while (!shtdown) {
       rclcpp::spin_some(node);
       estimator.processFrame();
@@ -420,6 +434,10 @@ int main(int argc, char **argv) {
       publisher.publishImages(images);
       if (std::chrono::steady_clock::now() >= nextRss) {
         sampleRss();
+        if (g_stats.rssWarmMb == 0 && nextRss >= warmAt) {
+          g_stats.rssWarmMb = g_stats.rssEndMb;
+          g_stats.tWarm = std::chrono::steady_clock::now();
+        }
         nextRss += std::chrono::seconds(1);
       }
     }

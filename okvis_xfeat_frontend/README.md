@@ -55,9 +55,10 @@ CMake package, so OKVIS finds it without ROS).
 | TensorRT 10.3 named I/O (`getTensorShape/DataType`, `setTensorAddress`, `enqueueV3`), batch=2 stereo, contract check `io_names_match` (`TensorRTEngine.cpp`) | ✅ on-device, T-0111 |
 | Device→host readback into `FrameFeatures`: −1 padding strip, score threshold, scale-back to full-res px, unit norm (`FrameFeaturesUtil.hpp`, gtest `test/test_frame_features.cpp`) | ✅ on-device + qemu, T-0111 |
 | `xfeat_frontend_demo --engine --left --right --iters --json` (PNG pair, pinned host buffers, mean/p99 per pair) | ✅ 6.5 ms mean / 7.0 ms p99 per stereo pair, 640x384 k1024 FP16, Orin Nano MAXN_SUPER (T-0111) |
-| `.plan` engines from `trtexec` (`xfeat.plan`, `lighterglue.plan`) | ✅ on device (`/opt/mowe/onnx`) |
+| `.plan` engines from `trtexec` (`xfeat_*.plan`, `lighterglue_k512_*.plan`) | ✅ on device (`/home/mowe/agent/engines`, T-0110) |
 | OKVIS `MultiFrame` hand-off (detect/describe + float matching) | ✅ ADR-0040 stage A (`okvis_frontend`, `USE_MOWE_XFEAT`) |
-| **LighterGlue** pair matcher (`LighterGlueMatcher`, DDS outputs) | ✅ stage B/C — stereo + top-overlap motion stereo |
+| **LighterGlue** k512 split matcher (`LighterGlueMatcher`, static `matches0/mscores0`, `scores>0` validity mask, top-K by score, greatest-priority stream; CPU helpers `LighterGlueUtil.hpp`, gtest `test/test_lighterglue.cpp`) | ✅ on-device, T-0114 (`out/agent/T-0114/device/lg.json`): 186 matches, 5.2 ms mean / 11.6 ms p99, mask proven by garbage-padding A/B |
+| `lighterglue_demo --engine --xfeat-engine --left --right --iters --json [--dump csv] [--epi-tol px]` (XFeat → LighterGlue vs mutual-NN on the fixture pair, epipolar/disparity inlier ratios, padding-mask A/B) | ✅ T-0114 |
 | Place recognition (DBoW replacement) | ❌ ADR-0040 issue #5 (DINOv2/FAISS); loop closures disabled with XFeat |
 
 Without `USE_TENSORRT` the engine runs in **stub mode**: the pipeline executes
@@ -74,11 +75,14 @@ end-to-end but emits empty features (useful for wiring/timing the capture path).
    descriptors via `resetKeypoints`/`resetDescriptors`.
 2. **Metric** — `descriptorDist()` dispatches BRISK Hamming ↔ cosine distance
    (1 − dot); `matching_threshold` is a cosine distance with XFeat.
-3. **Pair matching** — `LighterGlueMatcher` proposes mutual-NN pairs for
-   `matchStereo` (L↔R) and the top-`motion_stereo_top_n` overlap frames in
-   `matchMotionStereo`; OKVIS's triangulation validation + landmark
-   bookkeeping run unchanged on the proposals. Empty `lighterglue_engine`
-   falls back to brute-force cosine NN.
+3. **Pair matching** — `matchStereo` (L↔R) runs brute-force mutual-NN cosine
+   first and calls `LighterGlueMatcher` only when that found fewer than
+   `stereo_min_nn_matches` (default 40) pairs, for the still-unmatched
+   keypoints (KB 02 decision table, T-0114). `matchMotionStereo` uses it for
+   the top-`motion_stereo_top_n` overlap frames. OKVIS's triangulation
+   validation + landmark bookkeeping run unchanged on the proposals. Empty
+   `lighterglue_engine` = cosine NN only. `frontend_stats.json` counts
+   `stereo_lighterglue_fallbacks`.
 4. **Place recognition** — still open (issue #5): the DBoW2 vocabulary is
    BRISK-trained, so multi-session + loop-closure paths are disabled under
    XFeat until DINOv2/FAISS lands.

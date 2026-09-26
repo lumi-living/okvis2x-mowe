@@ -122,6 +122,7 @@ struct XFeatParameters {
   double keypoint_size = 16.0; ///< Nominal keypoint size [px]; sets obs. sigma = size/f*0.125.
   double match_score_min = 0.10; ///< Min LighterGlue mutual-NN score to accept a match.
   int motion_stereo_top_n = 1; ///< Use LighterGlue for this many best-overlap motion-stereo frames.
+  int stereo_min_nn_matches = 40; ///< matchStereo: run LighterGlue only when mutual-NN found fewer matches (T-0114).
 };
 
 /**

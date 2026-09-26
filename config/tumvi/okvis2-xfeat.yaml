@@ -94,8 +94,10 @@ frontend_parameters:
         engine: /home/mowe/agent/engines/xfeat_512x512_k1024_trt10.3_sm87_fp16.plan
         score_threshold: 0.05 # keypointness x reliability floor (upstream default)
         keypoint_size: 16.0 # [px] nominal size; obs sigma = size/f*0.125 in matching
-        match_score_min: 0.10 # (LighterGlue-only)
-        motion_stereo_top_n: 0 # (LighterGlue-only)
+        lighterglue_engine: /home/mowe/agent/engines/lighterglue_k512_trt10.3_sm87_fp16.plan
+        match_score_min: 0.10 # LighterGlue confidence floor
+        motion_stereo_top_n: 0 # LighterGlue for N best-overlap motion-stereo frames (off)
+        stereo_min_nn_matches: 40 # stereo: mutual-NN first, LighterGlue only below this (T-0114)
 
 # estimator parameters
 estimator_parameters:

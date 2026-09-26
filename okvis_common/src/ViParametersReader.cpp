@@ -336,6 +336,7 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
     parseEntry(xfeatNode, "keypoint_size", xfeat.keypoint_size);
     parseEntry(xfeatNode, "match_score_min", xfeat.match_score_min);
     parseEntry(xfeatNode, "motion_stereo_top_n", xfeat.motion_stereo_top_n);
+    parseEntry(xfeatNode, "stereo_min_nn_matches", xfeat.stereo_min_nn_matches);
     OKVIS_ASSERT_TRUE(Exception, !xfeat.use || !xfeat.engine.empty(),
                       "frontend_parameters: xfeat: use requires an engine path")
   }

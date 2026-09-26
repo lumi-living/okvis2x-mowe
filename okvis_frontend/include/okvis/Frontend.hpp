@@ -269,6 +269,7 @@ class Frontend : public ViFrontendInterface {
     uint64_t frames = 0;            ///< camera frames (images) detected on
     uint64_t stereoMatches = 0;     ///< accepted L-R stereo matches (matchStereo)
     uint64_t stereoCalls = 0;       ///< matchStereo pair evaluations (keyframes)
+    uint64_t stereoLgFallbacks = 0; ///< stereo pairs where NN < stereo_min_nn_matches ran LighterGlue (T-0114)
     uint64_t keyframeMatches = 0;   ///< 3d2d matches to the map (matchToMap)
     uint64_t keyframeCalls = 0;     ///< matchToMap calls (every frame after the first)
     uint64_t loopClosures = 0;      ///< accepted loop closures

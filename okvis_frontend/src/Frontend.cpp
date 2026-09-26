@@ -389,17 +389,21 @@ bool Frontend::lighterGluePairProposals(const okvis::MultiFrame& frameA,
 
   // Gather pixel coords; descriptors are already a contiguous [n x 64] float
   // block (the CV_32F Mat built by detectAndDescribeXFeat).
-  std::vector<float> kptsA(nA * 2), kptsB(nB * 2);
-  Eigen::Vector2d pt;
+  // Scores (cv::KeyPoint::response = XFeat score) pick the top-K the matcher
+  // stages and drive its validity mask (score > 0). // T-0114
+  std::vector<float> kptsA(nA * 2), kptsB(nB * 2), scoresA(nA), scoresB(nB);
+  cv::KeyPoint kp;
   for (size_t k = 0; k < nA; ++k) {
-    frameA.getKeypoint(imA, k, pt);
-    kptsA[k * 2] = float(pt[0]);
-    kptsA[k * 2 + 1] = float(pt[1]);
+    frameA.getCvKeypoint(imA, k, kp);
+    kptsA[k * 2] = kp.pt.x;
+    kptsA[k * 2 + 1] = kp.pt.y;
+    scoresA[k] = kp.response;
   }
   for (size_t k = 0; k < nB; ++k) {
-    frameB.getKeypoint(imB, k, pt);
-    kptsB[k * 2] = float(pt[0]);
-    kptsB[k * 2 + 1] = float(pt[1]);
+    frameB.getCvKeypoint(imB, k, kp);
+    kptsB[k * 2] = kp.pt.x;
+    kptsB[k * 2 + 1] = kp.pt.y;
+    scoresB[k] = kp.response;
   }
   const float* descA =
       reinterpret_cast<const float*>(frameA.keypointDescriptor(imA, 0));
@@ -408,10 +412,10 @@ bool Frontend::lighterGluePairProposals(const okvis::MultiFrame& frameA,
 
   std::lock_guard<std::mutex> lock(xfeatRuntime_->lighterGlueMutex);
   const xfeat::PairMatches matches = xfeatRuntime_->lighterGlue->match(
-      kptsA.data(), descA, nA,
+      kptsA.data(), descA, scoresA.data(), nA,
       std::uint32_t(frameA.geometry(imA)->imageWidth()),
       std::uint32_t(frameA.geometry(imA)->imageHeight()), kptsB.data(), descB,
-      nB, std::uint32_t(frameB.geometry(imB)->imageWidth()),
+      scoresB.data(), nB, std::uint32_t(frameB.geometry(imB)->imageWidth()),
       std::uint32_t(frameB.geometry(imB)->imageHeight()));
   for (size_t m = 0; m < matches.size(); ++m) {
     matchBForA[matches.indices[m].first] = int(matches.indices[m].second);
@@ -585,6 +589,7 @@ bool Frontend::writeStatsJson(const std::string& path) const {
     << "  \"mean_keypoints_per_frame\": " << ratio(s.keypoints, s.frames) << ",\n"
     << "  \"stereo_calls\": " << s.stereoCalls << ",\n"
     << "  \"mean_stereo_matches\": " << ratio(s.stereoMatches, s.stereoCalls) << ",\n"
+    << "  \"stereo_lighterglue_fallbacks\": " << s.stereoLgFallbacks << ",\n"
     << "  \"keyframe_match_calls\": " << s.keyframeCalls << ",\n"
     << "  \"mean_keyframe_matches\": " << ratio(s.keyframeMatches, s.keyframeCalls) << ",\n"
     << "  \"loop_closures\": " << s.loopClosures << "\n"
@@ -2624,14 +2629,30 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
         const auto camera1 = multiFrame->geometryAs<CAMERA_GEOMETRY>(im1);
         const double f0 = 0.5* (camera0->focalLengthU() + camera0->focalLengthV());
         const double f1 = 0.5* (camera1->focalLengthU() + camera1->focalLengthV());
-        // LighterGlue stereo proposals (ADR-0040 stage B): one candidate k1
-        // per k0; the triangulation validation below is unchanged. When not
-        // available, the brute-force descriptor loop runs as before.
+        // Pass 0: brute-force (mutual-NN on the float path). Pass 1, only
+        // when pass 0 found fewer than xfeat.stereo_min_nn_matches and a
+        // LighterGlue engine is loaded: one proposal per still-unmatched k0
+        // (KB 02 decision table — LighterGlue is the stereo FALLBACK, T-0114;
+        // ADR-0040 stage B). The triangulation validation is shared.
         std::vector<int> lgMatch;
-        const bool lgMode =
-            lighterGluePairProposals(*multiFrame, im0, *multiFrame, im1, lgMatch);
+        bool lgMode = false;
         uint64_t numStereoMatches = 0;
+        std::vector<bool> matched0(k0Size, false), matched1(k1Size, false);
+        for(int pass = 0; pass < 2; ++pass) {
+        if(pass == 1) {
+          if(!floatDescriptors() ||
+             numStereoMatches >= uint64_t(std::max(0, xfeatParams_.stereo_min_nn_matches)) ||
+             !lighterGluePairProposals(*multiFrame, im0, *multiFrame, im1, lgMatch)) {
+            break;
+          }
+          lgMode = true;
+          std::lock_guard<std::mutex> lock(statsMutex_);
+          ++stats_.stereoLgFallbacks;
+        }
         for(size_t k0 = 0; k0 < k0Size; ++k0) {
+          if(lgMode && (matched0[k0] || (lgMatch[k0] >= 0 && matched1[size_t(lgMatch[k0])]))) {
+            continue;  // keep pass-0 matches; never re-add or steal them
+          }
 
           double distances = briskMatchingThreshold_;
           bool initialisable=  false;
@@ -2714,6 +2735,8 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
 
           if(distances<briskMatchingThreshold_) {
             ++numStereoMatches;
+            matched0[k0] = true;
+            matched1[k1_match] = true;
             Eigen::Vector2d pt0, pt1;
             multiFrame->getKeypoint(im0, k0, pt0);
             multiFrame->getKeypoint(im1, k1_match, pt1);
@@ -2784,6 +2807,7 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
             }
           }
         }
+        }  // pass
         {
           std::lock_guard<std::mutex> lock(statsMutex_);
           stats_.stereoMatches += numStereoMatches;

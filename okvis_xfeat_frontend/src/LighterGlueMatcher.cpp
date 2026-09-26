@@ -3,15 +3,17 @@
  * @brief LighterGlue TensorRT pair matcher. Real impl under
  *        OKVIS_XFEAT_USE_TENSORRT (TensorRT 10.3), stub otherwise.
  *
- * The engine's "matches"/"scores" outputs have data-dependent shapes (the
- * in-graph mutual-NN keeps a variable number of pairs), so the execution
- * context needs an nvinfer1::IOutputAllocator per output. M <= K always, so
- * both outputs are preallocated at capacity and never grow at runtime;
- * notifyShape() delivers the actual M after enqueue.
+ * All engine I/O is static-shape (export.py, T-0109): mutual-NN + threshold
+ * run in-graph and the result is matches0[1,K] / mscores0[1,K], so no output
+ * allocator is needed. Padding slots carry score -1 and are masked inside the
+ * engine (KB 03 §padding); LighterGlueUtil.hpp does the CPU side and is
+ * unit-tested without CUDA. // T-0114
  */
 #include "okvis/xfeat/LighterGlueMatcher.hpp"
 
 #include <iostream>
+
+#include "okvis/xfeat/LighterGlueUtil.hpp"
 
 #ifdef OKVIS_XFEAT_USE_TENSORRT
 
@@ -35,42 +37,6 @@ class Logger : public nvinfer1::ILogger {
   }
 };
 
-/// Preallocated-at-capacity output allocator for one data-dependent tensor.
-class FixedCapacityOutput : public nvinfer1::IOutputAllocator {
- public:
-  bool init(std::size_t capacity_bytes) {
-    capacity_ = capacity_bytes;
-    return cudaMalloc(&ptr_, capacity_bytes) == cudaSuccess;
-  }
-  ~FixedCapacityOutput() override { cudaFree(ptr_); }
-
-  void* reallocateOutput(char const* /*name*/, void* /*current*/,
-                         std::uint64_t size,
-                         std::uint64_t /*alignment*/) noexcept override {
-    // M <= K by construction (mutual-NN), so the preallocation always fits;
-    // returning nullptr on overflow makes TRT fail the enqueue loudly rather
-    // than write out of bounds.
-    return size <= capacity_ ? ptr_ : nullptr;
-  }
-  void* reallocateOutputAsync(char const* name, void* current,
-                              std::uint64_t size, std::uint64_t alignment,
-                              cudaStream_t /*stream*/) noexcept override {
-    return reallocateOutput(name, current, size, alignment);
-  }
-  void notifyShape(char const* /*name*/,
-                   nvinfer1::Dims const& dims) noexcept override {
-    shape_ = dims;
-  }
-
-  const void* data() const noexcept { return ptr_; }
-  const nvinfer1::Dims& shape() const noexcept { return shape_; }
-
- private:
-  void* ptr_ = nullptr;
-  std::size_t capacity_ = 0;
-  nvinfer1::Dims shape_{};
-};
-
 }  // namespace
 
 struct LighterGlueMatcher::Impl {
@@ -80,30 +46,53 @@ struct LighterGlueMatcher::Impl {
   nvinfer1::ICudaEngine* engine = nullptr;
   nvinfer1::IExecutionContext* context = nullptr;
   cudaStream_t stream = nullptr;
-
   std::uint32_t capacity = 0;  // K from the engine bindings.
+  bool ioMatch = false;
 
-  // Device input slates [1,K,2] / [1,K,64], zero-padded past n.
+  // Device slates, per side: [1,K,2] / [1,K,64] / [1,K]; outputs [1,K].
   float* d_kpts[2] = {nullptr, nullptr};
   float* d_desc[2] = {nullptr, nullptr};
+  float* d_scores[2] = {nullptr, nullptr};
+  std::int32_t* d_matches = nullptr;
+  float* d_mscores = nullptr;
 
-  FixedCapacityOutput matchesOut;  // [M,2] int64
-  FixedCapacityOutput scoresOut;   // [M]   float
-
-  // Host staging (normalised kpts; descriptors go straight from the caller).
-  std::vector<float> h_kpts[2];
-  std::vector<std::int64_t> h_matches;
-  std::vector<float> h_scores;
+  // Pinned host staging (page-locked → async DMA on the stream).
+  StagedSet staged[2];
+  float* h_desc[2] = {nullptr, nullptr};
+  std::int32_t* h_matches = nullptr;
+  float* h_mscores = nullptr;
 
   ~Impl() {
     for (int s = 0; s < 2; ++s) {
       cudaFree(d_kpts[s]);
       cudaFree(d_desc[s]);
+      cudaFree(d_scores[s]);
+      cudaFreeHost(h_desc[s]);
     }
+    cudaFree(d_matches);
+    cudaFree(d_mscores);
+    cudaFreeHost(h_matches);
+    cudaFreeHost(h_mscores);
     if (stream) cudaStreamDestroy(stream);
     delete context;  // TRT 10: objects are deleted, not destroy()'d.
     delete engine;
     delete runtime;
+  }
+
+  bool checkIo() const {
+    struct Want { const char* name; nvinfer1::DataType dt; int rank; };
+    const Want want[] = {
+        {"kpts0", nvinfer1::DataType::kFLOAT, 3}, {"kpts1", nvinfer1::DataType::kFLOAT, 3},
+        {"desc0", nvinfer1::DataType::kFLOAT, 3}, {"desc1", nvinfer1::DataType::kFLOAT, 3},
+        {"scores0", nvinfer1::DataType::kFLOAT, 2}, {"scores1", nvinfer1::DataType::kFLOAT, 2},
+        {"matches0", nvinfer1::DataType::kINT32, 2}, {"mscores0", nvinfer1::DataType::kFLOAT, 2}};
+    if (engine->getNbIOTensors() != int(sizeof(want) / sizeof(want[0]))) return false;
+    for (const Want& w : want) {
+      const nvinfer1::Dims d = engine->getTensorShape(w.name);
+      if (d.nbDims != w.rank || engine->getTensorDataType(w.name) != w.dt) return false;
+      if (d.d[1] != std::int64_t(capacity)) return false;
+    }
+    return true;
   }
 
   bool load() {
@@ -122,63 +111,69 @@ struct LighterGlueMatcher::Impl {
     context = engine->createExecutionContext();
     if (!context) return false;
 
-    // Capacity from the static input shape [1,K,2].
     const nvinfer1::Dims kd = engine->getTensorShape("kpts0");
     if (kd.nbDims != 3) {
       std::cerr << "[trt-lg] unexpected kpts0 shape\n";
       return false;
     }
     capacity = std::uint32_t(kd.d[1]);
-
-    if (cudaStreamCreate(&stream) != cudaSuccess) return false;
-    const std::size_t kptsBytes = std::size_t(capacity) * 2 * sizeof(float);
-    const std::size_t descBytes =
-        std::size_t(capacity) * kDescDim * sizeof(float);
-    for (int s = 0; s < 2; ++s) {
-      if (cudaMalloc(&d_kpts[s], kptsBytes) != cudaSuccess) return false;
-      if (cudaMalloc(&d_desc[s], descBytes) != cudaSuccess) return false;
-      h_kpts[s].resize(std::size_t(capacity) * 2);
-    }
-    // Outputs at worst case M == K.
-    if (!matchesOut.init(std::size_t(capacity) * 2 * sizeof(std::int64_t))) {
+    ioMatch = checkIo();
+    if (!ioMatch) {
+      std::cerr << "[trt-lg] engine I/O does not match the export.py contract "
+                   "(kpts/desc/scores in, matches0/mscores0 out)\n";
       return false;
     }
-    if (!scoresOut.init(std::size_t(capacity) * sizeof(float))) return false;
-    h_matches.resize(std::size_t(capacity) * 2);
-    h_scores.resize(capacity);
 
-    if (!context->setOutputAllocator("matches", &matchesOut)) return false;
-    if (!context->setOutputAllocator("scores", &scoresOut)) return false;
+    // Same priority as the extractor: VIO must not be starved by perception
+    // engines (KB 03 §streams). greatest = numerically lowest.
+    int lo = 0, hi = 0;
+    cudaDeviceGetStreamPriorityRange(&lo, &hi);
+    if (cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, hi) != cudaSuccess) return false;
+
+    const std::size_t K = capacity;
+    const std::size_t descBytes = K * kDescDim * sizeof(float);
+    for (int s = 0; s < 2; ++s) {
+      if (cudaMalloc(&d_kpts[s], K * 2 * sizeof(float)) != cudaSuccess) return false;
+      if (cudaMalloc(&d_desc[s], descBytes) != cudaSuccess) return false;
+      if (cudaMalloc(&d_scores[s], K * sizeof(float)) != cudaSuccess) return false;
+      if (cudaMallocHost(reinterpret_cast<void**>(&h_desc[s]), descBytes) != cudaSuccess) return false;
+    }
+    if (cudaMalloc(&d_matches, K * sizeof(std::int32_t)) != cudaSuccess) return false;
+    if (cudaMalloc(&d_mscores, K * sizeof(float)) != cudaSuccess) return false;
+    if (cudaMallocHost(reinterpret_cast<void**>(&h_matches), K * sizeof(std::int32_t)) != cudaSuccess) return false;
+    if (cudaMallocHost(reinterpret_cast<void**>(&h_mscores), K * sizeof(float)) != cudaSuccess) return false;
+
+    context->setTensorAddress("kpts0", d_kpts[0]);
+    context->setTensorAddress("kpts1", d_kpts[1]);
+    context->setTensorAddress("desc0", d_desc[0]);
+    context->setTensorAddress("desc1", d_desc[1]);
+    context->setTensorAddress("scores0", d_scores[0]);
+    context->setTensorAddress("scores1", d_scores[1]);
+    context->setTensorAddress("matches0", d_matches);
+    context->setTensorAddress("mscores0", d_mscores);
     return true;
   }
 
-  // Normalise pixel coords per the LightGlue convention and stage one side.
-  // Returns the number of slots actually filled (n truncated to capacity).
-  std::size_t stage(int side, const float* kpts_px, const float* desc,
-                    std::size_t n, std::uint32_t width, std::uint32_t height) {
-    const std::size_t used = std::min<std::size_t>(n, capacity);
-    const float shiftX = 0.5f * float(width);
-    const float shiftY = 0.5f * float(height);
-    const float invScale = 2.0f / float(std::max(width, height));
-    std::vector<float>& staged = h_kpts[side];
-    std::fill(staged.begin(), staged.end(), 0.f);  // zero-pad unused slots
-    for (std::size_t i = 0; i < used; ++i) {
-      staged[i * 2] = (kpts_px[i * 2] - shiftX) * invScale;
-      staged[i * 2 + 1] = (kpts_px[i * 2 + 1] - shiftY) * invScale;
+  // Stage one side: top-K by score, normalised coords, validity via scores
+  // (-1 in unused slots), descriptors gathered into pinned memory, then
+  // uploaded on the stream. Unused descriptor rows are zeroed once per call
+  // (cheap, K*64 floats) so a stale row can never be read even if masking
+  // were ever wrong.
+  void stage(int side, const float* kpts_px, const float* desc, const float* scores,
+             std::size_t n, std::uint32_t width, std::uint32_t height) {
+    StagedSet& st = staged[side];
+    stage_set(kpts_px, scores, n, width, height, capacity, st);
+    std::memset(h_desc[side], 0, std::size_t(capacity) * kDescDim * sizeof(float));
+    for (std::size_t i = 0; i < st.used; ++i) {
+      std::memcpy(h_desc[side] + i * kDescDim, desc + std::size_t(st.src_index[i]) * kDescDim,
+                  kDescDim * sizeof(float));
     }
-    cudaMemcpyAsync(d_kpts[side], staged.data(),
-                    staged.size() * sizeof(float), cudaMemcpyHostToDevice,
-                    stream);
-    // Descriptors: copy the used rows, zero the padded tail.
-    cudaMemcpyAsync(d_desc[side], desc,
-                    used * kDescDim * sizeof(float), cudaMemcpyHostToDevice,
-                    stream);
-    const std::size_t padFloats = std::size_t(capacity - used) * kDescDim;
-    if (padFloats) {
-      cudaMemsetAsync(d_desc[side] + used * kDescDim, 0,
-                      padFloats * sizeof(float), stream);
-    }
-    return used;
+    cudaMemcpyAsync(d_kpts[side], st.kpts_norm.data(), st.kpts_norm.size() * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_scores[side], st.scores.data(), st.scores.size() * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_desc[side], h_desc[side], std::size_t(capacity) * kDescDim * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
   }
 };
 
@@ -187,10 +182,8 @@ LighterGlueMatcher::LighterGlueMatcher(const LighterGlueConfig& cfg)
   impl_->cfg = cfg;
   if (cfg.engine_path.empty()) return;
   if (!impl_->load()) {
-    std::cerr << "[trt-lg] LighterGlue engine failed to load: "
-              << cfg.engine_path << "\n";
-    // Reset to a clean stub state.
-    impl_ = std::make_unique<Impl>();
+    std::cerr << "[trt-lg] LighterGlue engine failed to load: " << cfg.engine_path << "\n";
+    impl_ = std::make_unique<Impl>();  // clean stub state
     impl_->cfg = cfg;
     impl_->cfg.engine_path.clear();
   }
@@ -198,67 +191,44 @@ LighterGlueMatcher::LighterGlueMatcher(const LighterGlueConfig& cfg)
 
 LighterGlueMatcher::~LighterGlueMatcher() = default;
 LighterGlueMatcher::LighterGlueMatcher(LighterGlueMatcher&&) noexcept = default;
-LighterGlueMatcher& LighterGlueMatcher::operator=(LighterGlueMatcher&&) noexcept =
-    default;
+LighterGlueMatcher& LighterGlueMatcher::operator=(LighterGlueMatcher&&) noexcept = default;
 
-bool LighterGlueMatcher::loaded() const noexcept {
-  return impl_->engine != nullptr;
-}
-
-std::uint32_t LighterGlueMatcher::capacity() const noexcept {
-  return impl_->capacity;
-}
+bool LighterGlueMatcher::loaded() const noexcept { return impl_->engine != nullptr; }
+std::uint32_t LighterGlueMatcher::capacity() const noexcept { return impl_->capacity; }
+bool LighterGlueMatcher::io_names_match() const noexcept { return impl_->ioMatch; }
 
 PairMatches LighterGlueMatcher::match(
-    const float* kptsA, const float* descA, std::size_t nA,
-    std::uint32_t widthA, std::uint32_t heightA, const float* kptsB,
-    const float* descB, std::size_t nB, std::uint32_t widthB,
-    std::uint32_t heightB) {
+    const float* kptsA, const float* descA, const float* scoresA, std::size_t nA,
+    std::uint32_t widthA, std::uint32_t heightA,
+    const float* kptsB, const float* descB, const float* scoresB, std::size_t nB,
+    std::uint32_t widthB, std::uint32_t heightB) {
   PairMatches result;
   Impl& im = *impl_;
   if (!im.context || nA == 0 || nB == 0) return result;
 
-  const std::size_t usedA = im.stage(0, kptsA, descA, nA, widthA, heightA);
-  const std::size_t usedB = im.stage(1, kptsB, descB, nB, widthB, heightB);
-
-  im.context->setTensorAddress("kpts0", im.d_kpts[0]);
-  im.context->setTensorAddress("kpts1", im.d_kpts[1]);
-  im.context->setTensorAddress("desc0", im.d_desc[0]);
-  im.context->setTensorAddress("desc1", im.d_desc[1]);
+  im.stage(0, kptsA, descA, scoresA, nA, widthA, heightA);
+  im.stage(1, kptsB, descB, scoresB, nB, widthB, heightB);
   if (!im.context->enqueueV3(im.stream)) {
     std::cerr << "[trt-lg] enqueue failed\n";
     return result;
   }
-  cudaStreamSynchronize(im.stream);
-
-  // M from the allocator's notifyShape ([M,2]).
-  const nvinfer1::Dims& md = im.matchesOut.shape();
-  const std::size_t numMatches =
-      md.nbDims >= 1 ? std::size_t(std::max<std::int64_t>(md.d[0], 0)) : 0;
-  if (numMatches == 0 || numMatches > im.capacity) return result;
-
-  cudaMemcpyAsync(im.h_matches.data(), im.matchesOut.data(),
-                  numMatches * 2 * sizeof(std::int64_t),
+  cudaMemcpyAsync(im.h_matches, im.d_matches, im.capacity * sizeof(std::int32_t),
                   cudaMemcpyDeviceToHost, im.stream);
-  cudaMemcpyAsync(im.h_scores.data(), im.scoresOut.data(),
-                  numMatches * sizeof(float), cudaMemcpyDeviceToHost,
-                  im.stream);
-  cudaStreamSynchronize(im.stream);
-
-  result.indices.reserve(numMatches);
-  result.scores.reserve(numMatches);
-  for (std::size_t m = 0; m < numMatches; ++m) {
-    const std::int64_t a = im.h_matches[m * 2];
-    const std::int64_t b = im.h_matches[m * 2 + 1];
-    const float score = im.h_scores[m];
-    // Drop matches into zero-padded slots and below the confidence floor.
-    if (a < 0 || b < 0 || std::size_t(a) >= usedA || std::size_t(b) >= usedB ||
-        score < im.cfg.min_score) {
-      continue;
-    }
-    result.indices.emplace_back(std::uint32_t(a), std::uint32_t(b));
-    result.scores.push_back(score);
+  cudaMemcpyAsync(im.h_mscores, im.d_mscores, im.capacity * sizeof(float),
+                  cudaMemcpyDeviceToHost, im.stream);
+  if (cudaStreamSynchronize(im.stream) != cudaSuccess) {
+    std::cerr << "[trt-lg] stream sync failed\n";
+    return result;
   }
+
+  DecodedMatches d = decode_matches(im.h_matches, im.h_mscores, im.staged[0], im.staged[1],
+                                    im.cfg.min_score);
+  result.indices = std::move(d.indices);
+  result.scores = std::move(d.scores);
+  result.staged_a = std::uint32_t(im.staged[0].used);
+  result.staged_b = std::uint32_t(im.staged[1].used);
+  result.masked_a = std::uint32_t(im.staged[0].masked_slots());
+  result.masked_b = std::uint32_t(im.staged[1].masked_slots());
   return result;
 }
 
@@ -272,20 +242,18 @@ namespace xfeat {
 
 struct LighterGlueMatcher::Impl {};
 
-LighterGlueMatcher::LighterGlueMatcher(const LighterGlueConfig&)
-    : impl_(nullptr) {
+LighterGlueMatcher::LighterGlueMatcher(const LighterGlueConfig&) : impl_(nullptr) {
   std::cerr << "[trt-lg] built without OKVIS_XFEAT_USE_TENSORRT — stub matcher\n";
 }
 LighterGlueMatcher::~LighterGlueMatcher() = default;
 LighterGlueMatcher::LighterGlueMatcher(LighterGlueMatcher&&) noexcept = default;
-LighterGlueMatcher& LighterGlueMatcher::operator=(LighterGlueMatcher&&) noexcept =
-    default;
+LighterGlueMatcher& LighterGlueMatcher::operator=(LighterGlueMatcher&&) noexcept = default;
 bool LighterGlueMatcher::loaded() const noexcept { return false; }
 std::uint32_t LighterGlueMatcher::capacity() const noexcept { return 0; }
-PairMatches LighterGlueMatcher::match(const float*, const float*, std::size_t,
-                                      std::uint32_t, std::uint32_t,
-                                      const float*, const float*, std::size_t,
-                                      std::uint32_t, std::uint32_t) {
+bool LighterGlueMatcher::io_names_match() const noexcept { return false; }
+PairMatches LighterGlueMatcher::match(const float*, const float*, const float*, std::size_t,
+                                      std::uint32_t, std::uint32_t, const float*, const float*,
+                                      const float*, std::size_t, std::uint32_t, std::uint32_t) {
   return PairMatches();
 }
 

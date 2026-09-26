@@ -156,6 +156,7 @@ frontend_parameters:
         keypoint_size: 16.0      # [px] nominal size; obs sigma = size/f*0.125 in matching
         match_score_min: 0.10    # LighterGlue mutual-NN score floor (stage B)
         motion_stereo_top_n: 1   # LighterGlue for N best-overlap motion-stereo frames (stage C)
+        stereo_min_nn_matches: 40 # stereo: mutual-NN first, LighterGlue only below this (T-0114)
 
 # estimator parameters
 estimator_parameters:

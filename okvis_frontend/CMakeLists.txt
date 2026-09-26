@@ -18,6 +18,7 @@ endif()
 set(LIB_NAME okvis_frontend)
 add_library(${LIB_NAME}
   include/DBoW2/FBrisk.hpp
+  include/okvis/LoopClosureGates.hpp
   include/okvis/triangulation/stereo_triangulation.hpp
   include/opengv/absolute_pose/FrameNoncentralAbsoluteAdapter.hpp
   include/opengv/absolute_pose/LoopclosureNoncentralAbsoluteAdapter.hpp
@@ -29,6 +30,7 @@ add_library(${LIB_NAME}
   src/FrameNoncentralAbsoluteAdapter.cpp
   src/FrameRelativeAdapter.cpp
   src/Frontend.cpp
+  src/LoopClosureGates.cpp
   src/LoopclosureNoncentralAbsoluteAdapter.cpp
   src/stereo_triangulation.cpp
 )
@@ -79,6 +81,9 @@ if(USE_MOWE_XFEAT)
   # frontend_parameters.xfeat.use is set.
   target_compile_definitions(${LIB_NAME} PRIVATE OKVIS_USE_MOWE_XFEAT)
   target_link_libraries(${LIB_NAME} PRIVATE okvis::XFeatFrontend)
+  # T-0120: DINOv2+VLAD place recognition replaces DBoW2 on the float path
+  # (onboard/localization/mowe_vpr; embedder = TensorRT via mowe_perception).
+  target_link_libraries(${LIB_NAME} PRIVATE mowe_vpr::embedder)
 endif()
 add_library(okvis::Frontend ALIAS ${LIB_NAME})
 
@@ -91,6 +96,12 @@ if(BUILD_TESTS)
   target_compile_options(test_float_matching PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
   add_test(NAME test_float_matching COMMAND test_float_matching)
   install(TARGETS test_float_matching DESTINATION lib/${PROJECT_NAME})
+  # T-0120: prior gate, temporal consistency, GP3P RANSAC with synthetic outliers.
+  add_executable(test_loop_closure_gates test/test_loop_closure_gates.cpp)
+  target_link_libraries(test_loop_closure_gates ${LIB_NAME} gtest gtest_main pthread)
+  target_compile_options(test_loop_closure_gates PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+  add_test(NAME test_loop_closure_gates COMMAND test_loop_closure_gates)
+  install(TARGETS test_loop_closure_gates DESTINATION lib/${PROJECT_NAME})
 endif()
 
 # the DBoW2 pre-built vocabulary

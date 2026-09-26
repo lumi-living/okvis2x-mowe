@@ -280,6 +280,48 @@ class Frontend : public ViFrontendInterface {
   ///        engine_loaded flag). Returns false when the file cannot be written.
   bool writeStatsJson(const std::string& path) const;
 
+  /// @}
+  /// @name VPR loop closure (Mow-e T-0120, mowe-nav-kb 06 §adapter, ADR-0042)
+  /// @{
+
+  /// \brief Enable VPR loop closure on the float-descriptor path: loads the DINOv2
+  ///        engine + VLAD vocabulary (vpr.engine empty = off). Throws when an engine
+  ///        is configured but the build lacks USE_MOWE_XFEAT.
+  void setVprLoopParameters(const VprLoopParameters& vpr);
+
+  /// \brief Whether VPR loop closure is active (engine + vocabulary loaded).
+  bool usingVprLoopClosure() const;
+
+  /// \brief Load another run's keyframes.bin (VPR descriptors, XFeat features,
+  ///        S-frame landmarks, poses) as a FOREIGN retrieval database: candidates
+  ///        are verified and counted, never fed to the graph (seed of T-0121).
+  bool loadForeignKeyframes(const std::string& path, const cameras::NCameraSystem& cameraSystem);
+
+  /// \brief Write this run's VPR keyframe database as keyframes.bin.
+  bool saveKeyframes(const Estimator& estimator, const std::string& path) const;
+
+  /// \brief Loop-closure funnel counters (in-session and foreign-map), written by
+  ///        the apps as loop_stats.json.
+  struct LoopStats {
+    uint64_t queries = 0;                 ///< keyframe VPR queries
+    uint64_t candidates = 0;              ///< in-session candidates above score_min
+    uint64_t candidatesSkippedState = 0;  ///< not a pose-graph / place-recognition frame, or a (recent) loop-closure frame
+    uint64_t rejectedByPriorGate = 0;     ///< Mahalanobis prior gate
+    uint64_t rejectedByGeometry = 0;      ///< LighterGlue + GP3P RANSAC + refinement
+    uint64_t rejectedByTemporal = 0;      ///< temporal consistency
+    uint64_t rejectedByEstimator = 0;     ///< ViSlamBackend::attemptLoopClosure refused
+    uint64_t loopsAccepted = 0;
+    uint64_t foreignCandidates = 0;
+    uint64_t foreignRejectedByGeometry = 0;
+    uint64_t foreignRejectedByTemporal = 0;
+    uint64_t loopsAcceptedAgainstForeignMap = 0;
+    std::vector<double> verificationMs;   ///< per verifyRecognisedPlace call (VPR path)
+    std::vector<double> embedMs;          ///< per keyframe VPR descriptor (embed + VLAD)
+    std::vector<double> priorMahalanobis; ///< per gated candidate
+  };
+  LoopStats loopStats() const;
+  bool writeLoopStatsJson(const std::string& path) const;
+
   /// \brief Descriptor distance dispatch (okvis/DescriptorDistance.hpp): BRISK
   ///        Hamming popcount, or cosine distance (1 - dot, unit descriptors)
   ///        when floatDescriptors() is set. matching_threshold is interpreted
@@ -347,6 +389,22 @@ private:
   ///        USE_MOWE_XFEAT).
   struct XFeatRuntime;
   std::unique_ptr<XFeatRuntime> xfeatRuntime_;
+
+  /// \brief VPR loop closure state (T-0120, PIMPL): embedder, vocabulary, in-session
+  ///        + foreign databases, temporal windows. Null unless configured.
+  struct VprLoop;
+  std::unique_ptr<VprLoop> vprLoop_;
+  VprLoopParameters vprParams_;
+  LoopStats loopStats_;
+  /// \brief Embed the left image of a keyframe into vprLoop_ (current descriptor).
+  bool vprEmbedCurrent(const MultiFrame& frame);
+  /// \brief In-session candidates above score_min (score-descending) for the current
+  ///        descriptor; foreign-map candidates are verified + counted here.
+  void vprQuery(const Estimator& estimator, const okvis::ViParameters& params,
+                std::shared_ptr<okvis::MultiFrame> framesInOut,
+                std::vector<std::pair<StateId, double>>& stateIds);
+  /// \brief Add the current descriptor as a database keyframe.
+  void vprAddCurrent(const Estimator& estimator, const MultiFrame& frame);
 
   /// \brief XFeat replacement for detect+describe: run the camera's engine on
   ///        the frame image, threshold + cap to max keypoints, and store

@@ -84,6 +84,7 @@ void ThreadedSlam::init()
   // XFeat/LighterGlue frontend (Mow-e, ADR-0040): after the BRISK setters, so
   // matching_threshold is already set and can be re-interpreted (cosine).
   frontend_.setXFeatParameters(parameters_.frontend.xfeat);
+  frontend_.setVprLoopParameters(parameters_.frontend.vpr);  // T-0120 VPR loop closure
 
   // setup estimator
   estimator_.addImu(parameters_.imu);

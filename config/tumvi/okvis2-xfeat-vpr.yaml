@@ -1,0 +1,145 @@
+%YAML:1.0
+# -----------------------------------------------------------------------------
+# TUM-VI 512x512 stereo-fisheye + BMI160 IMU, OKVIS2-X config, XFeat front-end
+# (T-0120, 2026-09-26; ADR-0040/ADR-0042). okvis2-xfeat.yaml (T-0113) plus VPR
+# LOOP CLOSURE: DINOv2 ViT-S/14 + VLAD retrieval (mowe_vpr, T-0119) replaces
+# DBoW2 on the float path; candidates go through the Mahalanobis prior gate,
+# LighterGlue + GP3P RANSAC (reproj_px) and temporal consistency before
+# attemptLoopClosure (mowe-nav-kb 06 §adapter). Identical to okvis2.yaml (BRISK baseline,
+# T-0107) except frontend_parameters + do_loop_closures:
+#   * detection/description = XFeat TensorRT engine xfeat_512x512_k1024 (batch 2,
+#     one enqueue per stereo pair). TUM-VI 512 export is exactly the engine
+#     size, so NO crop/pad and the intrinsics below are untouched.
+#   * matching_threshold is a COSINE DISTANCE (1 - cos sim) on unit 64-D rows.
+#   * stereo = mutual-NN + triangulation gate; frame->map = NN + IMU-predicted
+#     reprojection gate (metric-independent, T-0112); no LighterGlue (T-0114).
+#   * do_loop_closures: true with the frontend_parameters.vpr block below.
+# Requires okvis built with USE_MOWE_XFEAT=ON + USE_TENSORRT=ON (colcon.cuda.meta)
+# and the .plan on the device (tools/trt/build_engines.sh, T-0110).
+# -----------------------------------------------------------------------------
+cameras:
+     - {T_SC:
+        [ -0.99952504, 0.00750192, -0.02989013, 0.04557484,
+           0.02961534, -0.03439736, -0.99896935, -0.0711618,
+          -0.00852233, -0.99938008, 0.03415885, -0.04468125,
+          0.0, 0.0, 0.0, 1.0],
+        image_dimension: [512, 512],
+        distortion_coefficients: [0.0034823894022493434, 0.0007150348452162257, -0.0020532361418706202, 0.00020293673591811182],
+        distortion_type: equidistant,
+        focal_length: [190.97847715128717, 190.9733070521226],
+        principal_point: [254.93170605935475, 256.8974428996504],
+        cam_model: pinhole, # OKVIS2-X (required, else the camera is silently skipped)
+        camera_type: gray, #gray, rgb, gray+depth, rgb+depth
+        slam_use: okvis}
+
+     - {T_SC:
+        [ -0.99951105, 0.00810408, -0.03019914, -0.05545634,
+          0.03029912, 0.01251164, -0.99946257, -0.06925002,
+         -0.00772188, -0.99988889, -0.01275107, -0.04745286,
+          0.0, 0.0, 0.0, 1.0],
+        image_dimension: [512, 512],
+        distortion_coefficients: [0.0034003170790442797, 0.001766278153469831, -0.00266312569781606, 0.0003299517423931039],
+        distortion_type: equidistant,
+        focal_length: [190.44236969414825, 190.4344384721956],
+        principal_point: [252.59949716835982, 254.91723064636983],
+        cam_model: pinhole, # OKVIS2-X
+        camera_type: gray, #gray, rgb, gray+depth, rgb+depth
+        slam_use: okvis}
+
+# additional camera parameters
+camera_parameters:
+    timestamp_tolerance: 0.005 # [s] stereo frame out-of-sync tolerance
+    image_delay: 0.00 # [s] timestamp_camera_correct = timestamp_camera - image_delay
+    sync_cameras: [0,1] # the cameras that will be synchronised
+    online_calibration: # some parameters to set the online
+        do_extrinsics: false # Do we online-calibrate extrinsics?
+        do_extrinsics_final_ba: false # Do we calibrate extrinsics in final BA?
+        sigma_r: 0.01 # T_SCi position prior stdev [m]
+        sigma_alpha: 0.1 # T_SCi orientation prior stdev [rad]
+        sigma_r_final_ba: 0.03 # T_SCi position prior stdev in final BA [m]
+        sigma_alpha_final_ba: 0.3 # T_SCi orientation prior stdev in final BA [rad]
+
+imu_parameters:
+    use: true
+    a_max: 176.0 # acceleration saturation [m/s^2]
+    g_max: 7.8 # gyro saturation [rad/s]
+    sigma_g_c: 0.0008 # gyro noise density [rad/s/sqrt(Hz)]
+    sigma_a_c: 0.01 # accelerometer noise density [m/s^2/sqrt(Hz)]
+    sigma_bg: 0.01 # gyro bias prior [rad/s]
+    sigma_ba: 0.1 # accelerometer bias prior [m/s^2]
+    sigma_gw_c: 0.00022 # gyro drift noise density [rad/s^s/sqrt(Hz)]
+    sigma_aw_c: 0.001 # accelerometer drift noise density [m/s^2/sqrt(Hz)]
+    # Local gravity at 85748 Garching, Germany (latitude 48.262768, elevation 481 m)
+    g: 9.80766 # Earth's acceleration due to gravity [m/s^2]
+    a0: [ 0.0441545,   -0.0260651,   -0.0283834 ] # Accelerometer bias [m/s^2]
+    g0: [ 0.0, 0.0, 0.0 ] # initial gyro bias [rad/s]
+    s_a: [ 1.0,  1.0, 1.0 ] # OKVIS2-X (required) accelerometer scale factor
+    # tranform Body-Sensor (IMU)
+    T_BS:
+        [1.0000, 0.0000, 0.0000, 0.0000,
+         0.0000, 1.0000, 0.0000, 0.0000,
+         0.0000, 0.0000, 1.0000, 0.0000,
+         0.0000, 0.0000, 0.0000, 1.0000]
+
+# frontend: XFeat-on-TensorRT (ADR-0040). BRISK detection params are parsed but
+# ignored when xfeat.use is set; matching_threshold changes meaning (see top).
+frontend_parameters:
+    detection_threshold: 34.0 # (BRISK-only, ignored with xfeat.use)
+    absolute_threshold: 200.0 # (BRISK-only, ignored with xfeat.use)
+    matching_threshold: 0.25 # COSINE distance (0..2). 0.25 -> ATE 0.055 m, 0.18 + 600 kps -> 0.072 m but 17 % faster (T-0113 runs 2/3)
+    octaves: 0 # (BRISK-only, ignored with xfeat.use)
+    max_num_keypoints: 600 # strongest-600 of the engine top-1024 (T-0113 run 3: 17 % faster than 1024, ATE 0.072 m); T-0120: corridor1 (5990 frames) must fit the 2400 s verify window (1024 kps: ~42 min)
+    keyframe_overlap: 0.62 # minimum field-of-view overlap
+    use_cnn: false # no CNN in this build (USE_NN=OFF)
+    parallelise_detection: true # both camera threads call detectAndDescribe; the first runs the pair
+    num_matching_threads: 4 # Parallelise matching with this number of threads.
+    xfeat:
+        use: true
+        engine: /home/mowe/agent/engines/xfeat_512x512_k1024_trt10.3_sm87_fp16.plan
+        score_threshold: 0.05 # keypointness x reliability floor (upstream default)
+        keypoint_size: 16.0 # [px] nominal size; obs sigma = size/f*0.125 in matching
+        lighterglue_engine: /home/mowe/agent/engines/lighterglue_k512_trt10.3_sm87_fp16.plan
+        match_score_min: 0.10 # LighterGlue confidence floor
+        motion_stereo_top_n: 0 # LighterGlue for N best-overlap motion-stereo frames (off)
+        stereo_min_nn_matches: 40 # stereo: mutual-NN first, LighterGlue only below this (T-0114)
+    # VPR loop closure (T-0120). Engine + vocabulary from T-0119 (tools/onnx/export_dinov2.py,
+    # tools/trt/build_engines.sh dinov2; vocabulary = vpr_eval --k 32 --pca 128 --save-vocab on
+    # TUM-VI room1 — a TEST vocabulary, the lawn one is rebuilt from first-party frames, ADR-0014).
+    vpr:
+        engine: /home/mowe/agent/engines/dinov2_vits14_224_trt10.3_sm87_fp16.plan
+        vocabulary: /home/mowe/agent/out/T-0120/vocab_room1_k32_pca128.bin
+        top_k: 3 # retrieval candidates per keyframe
+        score_min: 0.40 # whitened-VLAD cosine gate (T-0119: corridor1 negatives p95 0.38)
+        prior_gate_sigma: 3.0 # loop_prior_gate_sigma
+        prior_sigma_pos_m: 0.3 # position sigma floor [m]
+        prior_drift_frac: 0.0135 # + this fraction of the path length between the frames (= drift_percentage_heuristic)
+        prior_sigma_rot_deg: 30.0 # orientation sigma [deg]
+        min_inliers: 20 # GP3P RANSAC + refinement inliers
+        reproj_px: 2.0 # RANSAC reprojection threshold [px]
+        min_inlier_ratio: 0.4 # inliers / LighterGlue landmark correspondences (true revisits ~0.47 at 2 px on this fisheye XFeat front-end; loop_verify_offline)
+        consecutive_required: 2 # loop_consecutive_required
+        consecutive_max_gap: 5 # ...verified candidates within this many database keyframes
+
+# estimator parameters
+estimator_parameters:
+    num_keyframes: 5 # number of keyframes in optimisation window
+    num_loop_closure_frames: 5 # number of loop closure frames in optimisation window
+    num_imu_frames: 3 # number of frames linked by most recent nonlinear IMU error terms
+    do_loop_closures: true # VI-SLAM via VPR loop closure (T-0120); DBoW2 stays off on the float path
+    do_final_ba: false # Whether to run a full final BA
+    enforce_realtime: false # deterministic golden run, no time budget
+    realtime_min_iterations: 3 # minimum number of iterations always performed
+    realtime_max_iterations: 10 # never do more than these, even if not converged
+    realtime_time_limit: 0.035 # time budget for realtime optimisation [s]
+    realtime_num_threads: 4 # number of threads for the realtime optimisation
+    full_graph_iterations: 15 # don't do more than these for the full (background) optimisation
+    full_graph_num_threads: 2 # number of threads for the full (background) optimisation
+    p_dbow: 0.4 # Match threshold for dBoW -- unfortunately this varies with setups.
+    drift_percentage_heuristic: 1.35 # % allowed drift in loop closures rel. to dist. travelled.
+
+# some options for how and what to output
+output_parameters:
+    display_topview: false # OKVIS2-X (required); headless
+    display_matches: false  # headless
+    display_overhead: false # debug overhead image. Is slow.
+    enable_submapping: false # OKVIS2-X (required); VI-SLAM only, no supereight2

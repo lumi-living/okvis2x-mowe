@@ -264,6 +264,8 @@ add_subdirectory(okvis_ceres)
 # BEFORE okvis_frontend, which links it (ADR-0040).
 if(USE_MOWE_XFEAT)
   add_subdirectory(okvis_xfeat_frontend)
+  # T-0120: VPR loop closure (DINOv2 embedder + VLAD retrieval) for okvis_frontend.
+  find_package(mowe_vpr REQUIRED)
 endif()
 
 add_subdirectory(okvis_frontend)
@@ -321,6 +323,14 @@ if(BUILD_APPS)
       ${OKVIS_PRIVATE_CXX_FLAGS}
   )
   install(TARGETS okvis_app_synchronous EXPORT okvisTargets RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+  # mow-e T-0120: offline loop-verification sweep on keyframes.bin (LighterGlue + GP3P).
+  if(USE_MOWE_XFEAT)
+    add_executable(loop_verify_offline okvis_apps/src/loop_verify_offline.cpp)
+    target_link_libraries(loop_verify_offline ${OpenCV_LIBS} okvis::Frontend okvis::XFeatFrontend okvis::Common)
+    target_compile_options(loop_verify_offline PUBLIC ${OKVIS_PUBLIC_CXX_FLAGS} PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+    install(TARGETS loop_verify_offline RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
 
   add_executable(okvis2x_app_synchronous
           okvis_apps/src/okvis2x_app_synchronous.cpp

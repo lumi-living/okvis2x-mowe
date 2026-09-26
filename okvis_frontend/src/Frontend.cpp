@@ -57,6 +57,9 @@
 
 #include <okvis/Frontend.hpp>
 #include <okvis/DescriptorDistance.hpp>
+#include <okvis/LoopClosureGates.hpp>
+#include <cstring>
+#include <unordered_map>
 
 #include <numeric>
 #include <algorithm>
@@ -70,6 +73,10 @@
 #include <okvis/xfeat/LighterGlueMatcher.hpp>
 #include <okvis/xfeat/XFeatFeatures.hpp>
 #include <okvis/xfeat/XFeatFrontend.hpp>
+// T-0120: VPR loop closure (DINOv2 embedder, VLAD, brute-force retrieval).
+#include <mowe_vpr/embedder.hpp>
+#include <mowe_vpr/retrieval.hpp>
+#include <mowe_vpr/vlad.hpp>
 #endif
 
 // okvis ceres
@@ -246,6 +253,414 @@ void Frontend::setXFeatParameters(const XFeatParameters& xfeat) {
 
 bool Frontend::usingXFeat() const {
   return xfeatParams_.use && xfeatRuntime_ != nullptr;
+}
+
+// -----------------------------------------------------------------------------
+// VPR loop closure (Mow-e T-0120, mowe-nav-kb 06 §adapter, ADR-0042): the
+// per-keyframe "descriptor -> candidate keyframe ids" query is DINOv2 ViT-S/14
+// + VLAD (onboard/localization/mowe_vpr) instead of DBoW2; the candidates go
+// through prior gate -> LighterGlue -> GP3P RANSAC -> temporal consistency and
+// then into the UNCHANGED ViSlamBackend::attemptLoopClosure path.
+struct Frontend::VprLoop {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  mowe_vpr::TrtEmbedder embedder;
+  mowe_vpr::Vocabulary vocabulary;
+  /// In-session database: Database id == index into entries.
+  struct Entry {
+    uint64_t stateId;
+    double cumDist;  ///< path length [m] along keyframes when this one was added
+  };
+  mowe_vpr::Database db;
+  std::vector<Entry> entries;
+  std::unordered_map<uint64_t, int> indexOfState;
+  double cumDist = 0.0;
+  bool haveLast = false;
+  Eigen::Vector3d r_last = Eigen::Vector3d::Zero();
+  /// Foreign map (--preload-map): Database id == index into foreignFrames.
+  mowe_vpr::Database foreignDb;
+  std::vector<std::shared_ptr<const MultiFrame>> foreignFrames;
+  std::vector<uint64_t> foreignIds;
+  loopclosure::TemporalConsistency temporal{2, 5};
+  loopclosure::TemporalConsistency temporalForeign{2, 5};
+  /// Current keyframe descriptor (computed once per keyframe, queried then added).
+  Eigen::VectorXf currentDesc;
+  uint64_t currentDescFrameId = 0;
+  bool haveCurrentDesc = false;
+  /// Serialise verifyRecognisedPlace timing etc. — single processing thread today.
+#endif
+};
+
+void Frontend::setVprLoopParameters(const VprLoopParameters& vpr) {
+  vprParams_ = vpr;
+  vprLoop_.reset();
+  if (vpr.engine.empty()) {
+    return;
+  }
+#ifdef OKVIS_USE_MOWE_XFEAT
+  OKVIS_ASSERT_TRUE(Exception, floatDescriptors_,
+                    "frontend_parameters: vpr: needs the XFeat (float descriptor) frontend")
+  std::unique_ptr<VprLoop> loop(new VprLoop());
+  OKVIS_ASSERT_TRUE(Exception, loop->embedder.load(vpr.engine),
+                    "DINOv2 VPR engine failed to load: " << vpr.engine)
+  OKVIS_ASSERT_TRUE(Exception, loop->vocabulary.load(vpr.vocabulary),
+                    "VPR vocabulary failed to load: " << vpr.vocabulary)
+  OKVIS_ASSERT_TRUE(Exception, loop->vocabulary.dim() == loop->embedder.dim(),
+                    "VPR vocabulary token dim " << loop->vocabulary.dim()
+                        << " != engine dim " << loop->embedder.dim())
+  loop->temporal = loopclosure::TemporalConsistency(vpr.consecutive_required, vpr.consecutive_max_gap);
+  loop->temporalForeign = loopclosure::TemporalConsistency(vpr.consecutive_required, vpr.consecutive_max_gap);
+  vprLoop_ = std::move(loop);
+  LOG(INFO) << "VPR loop closure enabled: " << vpr.engine << " + " << vpr.vocabulary
+            << " (K=" << vprLoop_->vocabulary.k() << ", desc dim "
+            << vprLoop_->vocabulary.desc_dim() << "); top_k " << vpr.top_k
+            << ", score_min " << vpr.score_min << ", prior gate " << vpr.prior_gate_sigma
+            << " sigma, min_inliers " << vpr.min_inliers << ", reproj " << vpr.reproj_px
+            << " px, min_inlier_ratio " << vpr.min_inlier_ratio << ", consecutive "
+            << vpr.consecutive_required;
+#else
+  OKVIS_THROW(Exception,
+              "frontend_parameters: vpr: engine set, but okvis was built without USE_MOWE_XFEAT")
+#endif
+}
+
+bool Frontend::usingVprLoopClosure() const {
+  return vprLoop_ != nullptr;
+}
+
+bool Frontend::vprEmbedCurrent(const MultiFrame& frame) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  vprLoop_->haveCurrentDesc = false;
+  const cv::Mat& image = frame.image(0);
+  if (image.empty()) {
+    LOG(WARNING) << "VPR: keyframe " << frame.id() << " has no left image; skipped";
+    return false;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  Eigen::VectorXf cls;
+  Eigen::MatrixXf patch;
+  if (!vprLoop_->embedder.embed(image, cls, patch)) {
+    LOG(WARNING) << "VPR: embedding failed on keyframe " << frame.id();
+    return false;
+  }
+  patch.rowwise().normalize();  // vpr_eval --norm-tokens 1 (the vocabulary was fitted so)
+  vprLoop_->currentDesc = mowe_vpr::describe(patch, vprLoop_->vocabulary);
+  vprLoop_->currentDescFrameId = frame.id();
+  vprLoop_->haveCurrentDesc = true;
+  loopStats_.embedMs.push_back(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - t0).count());
+  return true;
+#else
+  (void)frame;
+  return false;
+#endif
+}
+
+void Frontend::vprQuery(const Estimator& estimator, const okvis::ViParameters& params,
+                        std::shared_ptr<okvis::MultiFrame> framesInOut,
+                        std::vector<std::pair<StateId, double>>& stateIds) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  VprLoop& L = *vprLoop_;
+  ++loopStats_.queries;
+  // in-session candidates, score-descending (Database::query sorts)
+  for (const mowe_vpr::Candidate& c : L.db.query(L.currentDesc, vprParams_.top_k)) {
+    if (c.score < float(vprParams_.score_min)) {
+      continue;
+    }
+    ++loopStats_.candidates;
+    stateIds.push_back(std::make_pair(StateId(L.entries.at(size_t(c.id)).stateId), double(c.score)));
+  }
+  // foreign map: verified and counted, never handed to the estimator (T-0121 owns
+  // the relocalisation against a saved map).
+  if (L.foreignDb.size() > 0) {
+    bool verified = false;
+    for (const mowe_vpr::Candidate& c : L.foreignDb.query(L.currentDesc, vprParams_.top_k)) {
+      if (c.score < float(vprParams_.score_min)) {
+        continue;
+      }
+      ++loopStats_.foreignCandidates;
+      kinematics::Transformation T_Sold_Snew;
+      Eigen::Matrix<double, 6, 6> H;
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool ok = verifyRecognisedPlace(estimator, params, framesInOut,
+                                            L.foreignFrames.at(size_t(c.id)), T_Sold_Snew, H,
+                                            vprParams_.min_inliers);
+      loopStats_.verificationMs.push_back(std::chrono::duration<double, std::milli>(
+                                              std::chrono::steady_clock::now() - t0).count());
+      if (!ok) {
+        ++loopStats_.foreignRejectedByGeometry;
+        continue;
+      }
+      verified = true;
+      if (!L.temporalForeign.push(c.id)) {
+        ++loopStats_.foreignRejectedByTemporal;
+        break;
+      }
+      ++loopStats_.loopsAcceptedAgainstForeignMap;
+      LOG(WARNING) << "FOREIGN-MAP LOOP: frame " << framesInOut->id() << " t_ns "
+                   << framesInOut->timestamp().toNSec() << " -> foreign keyframe "
+                   << L.foreignIds.at(size_t(c.id)) << " t_ns "
+                   << L.foreignFrames.at(size_t(c.id))->timestamp().toNSec() << " (score " << c.score
+                   << ", t_Sold_Snew " << T_Sold_Snew.r().transpose()
+                   << ") — counted only, not fed to the graph (T-0121)";
+      break;
+    }
+    if (!verified) {
+      L.temporalForeign.miss();
+    }
+  }
+#else
+  (void)estimator; (void)params; (void)framesInOut; (void)stateIds;
+#endif
+}
+
+void Frontend::vprAddCurrent(const Estimator& estimator, const MultiFrame& frame) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  VprLoop& L = *vprLoop_;
+  if (!L.haveCurrentDesc || L.currentDescFrameId != frame.id()) {
+    return;
+  }
+  const Eigen::Vector3d r_WS = estimator.pose(StateId(frame.id())).r();
+  if (L.haveLast) {
+    L.cumDist += (r_WS - L.r_last).norm();
+  }
+  L.r_last = r_WS;
+  L.haveLast = true;
+  L.indexOfState[frame.id()] = int(L.entries.size());
+  L.db.add(int(L.entries.size()), L.currentDesc);
+  L.entries.push_back({frame.id(), L.cumDist});
+  L.haveCurrentDesc = false;
+#else
+  (void)estimator; (void)frame;
+#endif
+}
+
+Frontend::LoopStats Frontend::loopStats() const {
+  std::lock_guard<std::mutex> lock(statsMutex_);
+  return loopStats_;
+}
+
+bool Frontend::writeLoopStatsJson(const std::string& path) const {
+  const LoopStats s = loopStats();
+  auto summary = [](std::vector<double> v, double& mean, double& p99, double& mx) {
+    std::sort(v.begin(), v.end());
+    mean = v.empty() ? 0.0 : std::accumulate(v.begin(), v.end(), 0.0) / double(v.size());
+    p99 = v.empty() ? 0.0 : v[std::min(v.size() - 1, size_t(0.99 * double(v.size())))];
+    mx = v.empty() ? 0.0 : v.back();
+  };
+  double vMean, vP99, vMax, eMean, eP99, eMax, mMean, mP99, mMax;
+  summary(s.verificationMs, vMean, vP99, vMax);
+  summary(s.embedMs, eMean, eP99, eMax);
+  summary(s.priorMahalanobis, mMean, mP99, mMax);
+  size_t dbSize = 0, foreignSize = 0;
+#ifdef OKVIS_USE_MOWE_XFEAT
+  if (vprLoop_) {
+    dbSize = vprLoop_->entries.size();
+    foreignSize = vprLoop_->foreignFrames.size();
+  }
+#endif
+  std::ofstream f(path);
+  if (!f.good()) {
+    LOG(ERROR) << "cannot write loop stats to " << path;
+    return false;
+  }
+  f << std::setprecision(6) << std::fixed << "{\n"
+    << "  \"vpr_enabled\": " << (vprLoop_ ? 1 : 0) << ",\n"
+    << "  \"engine\": \"" << vprParams_.engine << "\",\n"
+    << "  \"vocabulary\": \"" << vprParams_.vocabulary << "\",\n"
+    << "  \"top_k\": " << vprParams_.top_k << ",\n"
+    << "  \"score_min\": " << vprParams_.score_min << ",\n"
+    << "  \"prior_gate_sigma\": " << vprParams_.prior_gate_sigma << ",\n"
+    << "  \"prior_sigma_pos_m\": " << vprParams_.prior_sigma_pos_m << ",\n"
+    << "  \"prior_drift_frac\": " << vprParams_.prior_drift_frac << ",\n"
+    << "  \"prior_sigma_rot_deg\": " << vprParams_.prior_sigma_rot_deg << ",\n"
+    << "  \"min_inliers\": " << vprParams_.min_inliers << ",\n"
+    << "  \"reproj_px\": " << vprParams_.reproj_px << ",\n"
+    << "  \"min_inlier_ratio\": " << vprParams_.min_inlier_ratio << ",\n"
+    << "  \"consecutive_required\": " << vprParams_.consecutive_required << ",\n"
+    << "  \"consecutive_max_gap\": " << vprParams_.consecutive_max_gap << ",\n"
+    << "  \"keyframes_in_db\": " << dbSize << ",\n"
+    << "  \"foreign_keyframes\": " << foreignSize << ",\n"
+    << "  \"vpr_queries\": " << s.queries << ",\n"
+    << "  \"candidates\": " << s.candidates << ",\n"
+    << "  \"candidates_skipped_state\": " << s.candidatesSkippedState << ",\n"
+    << "  \"candidates_rejected_by_prior_gate\": " << s.rejectedByPriorGate << ",\n"
+    << "  \"candidates_rejected_by_geometry\": " << s.rejectedByGeometry << ",\n"
+    << "  \"candidates_rejected_by_temporal\": " << s.rejectedByTemporal << ",\n"
+    << "  \"candidates_rejected_by_estimator\": " << s.rejectedByEstimator << ",\n"
+    << "  \"loops_accepted\": " << s.loopsAccepted << ",\n"
+    << "  \"foreign_candidates\": " << s.foreignCandidates << ",\n"
+    << "  \"foreign_rejected_by_geometry\": " << s.foreignRejectedByGeometry << ",\n"
+    << "  \"foreign_rejected_by_temporal\": " << s.foreignRejectedByTemporal << ",\n"
+    << "  \"loops_accepted_against_foreign_map\": " << s.loopsAcceptedAgainstForeignMap << ",\n"
+    << "  \"verifications\": " << s.verificationMs.size() << ",\n"
+    << "  \"mean_verification_ms\": " << vMean << ",\n"
+    << "  \"p99_verification_ms\": " << vP99 << ",\n"
+    << "  \"max_verification_ms\": " << vMax << ",\n"
+    << "  \"embeds\": " << s.embedMs.size() << ",\n"
+    << "  \"mean_embed_ms\": " << eMean << ",\n"
+    << "  \"p99_embed_ms\": " << eP99 << ",\n"
+    << "  \"prior_gated_candidates\": " << s.priorMahalanobis.size() << ",\n"
+    << "  \"mean_prior_mahalanobis\": " << mMean << ",\n"
+    << "  \"max_prior_mahalanobis\": " << mMax << "\n"
+    << "}\n";
+  LOG(INFO) << "loop stats written to " << path;
+  return true;
+}
+
+// keyframes.bin (T-0120, seed of the T-0121 map format), little-endian:
+//   "MOWEKF01" u32 numCameras u32 vprDim u32 numKeyframes
+//   per keyframe: u64 id, i64 t_ns, f64 r_WS[3], f64 q_WS[4] (x y z w), f32 vpr[vprDim],
+//     per camera: u32 K, per keypoint: f32 x y size response, f32 desc[64], u64 lmId,
+//                 u8 initialised, f64 hp_S[4]   (landmark in THIS keyframe's S frame)
+namespace {
+constexpr char kKeyframesMagic[8] = {'M', 'O', 'W', 'E', 'K', 'F', '0', '1'};
+template <typename T> bool wr(FILE* f, const T& v) { return std::fwrite(&v, sizeof(T), 1, f) == 1; }
+template <typename T> bool rd(FILE* f, T& v) { return std::fread(&v, sizeof(T), 1, f) == 1; }
+}  // namespace
+
+bool Frontend::saveKeyframes(const Estimator& estimator, const std::string& path) const {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  if (!vprLoop_) {
+    return false;
+  }
+  const VprLoop& L = *vprLoop_;
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) {
+    LOG(ERROR) << "cannot write " << path;
+    return false;
+  }
+  bool ok = std::fwrite(kKeyframesMagic, 1, 8, f) == 8;
+  const uint32_t vprDim = uint32_t(L.db.dim());
+  // count saveable keyframes first (multi-frame still held by the estimator)
+  std::vector<const VprLoop::Entry*> saveable;
+  for (const auto& e : L.entries) {
+    if (estimator.multiFrame(StateId(e.stateId))) {
+      saveable.push_back(&e);
+    }
+  }
+  ok = ok && wr(f, uint32_t(numCameras_)) && wr(f, vprDim) && wr(f, uint32_t(saveable.size()));
+  size_t numLandmarks = 0;
+  for (size_t n = 0; n < saveable.size() && ok; ++n) {
+    const VprLoop::Entry& e = *saveable[n];
+    const int dbIndex = L.indexOfState.at(e.stateId);
+    const MultiFramePtr mf = estimator.multiFrame(StateId(e.stateId));
+    const kinematics::Transformation T_WS = estimator.pose(StateId(e.stateId));
+    const kinematics::Transformation T_SW = T_WS.inverse();
+    ok = ok && wr(f, uint64_t(e.stateId)) && wr(f, int64_t(mf->timestamp().toNSec()));
+    for (int i = 0; i < 3 && ok; ++i) ok = wr(f, double(T_WS.r()[i]));
+    const Eigen::Vector4d q = T_WS.q().coeffs();  // x y z w
+    for (int i = 0; i < 4 && ok; ++i) ok = wr(f, double(q[i]));
+    // the descriptor: Database rows are the stored (unit) descriptors
+    const Eigen::VectorXf desc = L.db.row(dbIndex);
+    ok = ok && std::fwrite(desc.data(), sizeof(float), size_t(vprDim), f) == size_t(vprDim);
+    for (size_t im = 0; im < numCameras_ && ok; ++im) {
+      const size_t K = mf->numKeypoints(im);
+      ok = wr(f, uint32_t(K));
+      for (size_t k = 0; k < K && ok; ++k) {
+        cv::KeyPoint kp;
+        mf->getCvKeypoint(im, k, kp);
+        ok = wr(f, float(kp.pt.x)) && wr(f, float(kp.pt.y)) && wr(f, float(kp.size)) && wr(f, float(kp.response));
+        ok = ok && std::fwrite(mf->keypointDescriptor(im, k), sizeof(float), size_t(kFloatDescriptorDim), f) == size_t(kFloatDescriptorDim);
+        const uint64_t lmId = mf->landmarkId(im, k);
+        Eigen::Vector4d hp_S(0, 0, 0, 0);
+        bool initialised = false;
+        mf->getLandmark(im, k, hp_S, initialised);
+        if (!initialised && lmId != 0 && estimator.isLandmarkAdded(LandmarkId(lmId))) {
+          // still a live landmark in the real-time graph (not yet a pose-graph frame)
+          MapPoint2 mp;
+          if (estimator.getLandmark(LandmarkId(lmId), mp)) {
+            hp_S = T_SW * Eigen::Vector4d(mp.point);
+            initialised = mp.isInitialised;
+          }
+        }
+        if (initialised) ++numLandmarks;
+        ok = ok && wr(f, lmId) && wr(f, uint8_t(initialised ? 1 : 0));
+        for (int i = 0; i < 4 && ok; ++i) ok = wr(f, double(hp_S[i]));
+      }
+    }
+  }
+  ok = (std::fclose(f) == 0) && ok;
+  LOG(INFO) << "keyframes written to " << path << ": " << saveable.size() << " of "
+            << L.entries.size() << " keyframes, " << numLandmarks << " initialised landmarks";
+  return ok;
+#else
+  (void)estimator; (void)path;
+  return false;
+#endif
+}
+
+bool Frontend::loadForeignKeyframes(const std::string& path,
+                                    const cameras::NCameraSystem& cameraSystem) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  OKVIS_ASSERT_TRUE(Exception, vprLoop_, "--preload-map needs frontend_parameters.vpr")
+  VprLoop& L = *vprLoop_;
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) {
+    LOG(ERROR) << "cannot read " << path;
+    return false;
+  }
+  char magic[8];
+  uint32_t numCameras = 0, vprDim = 0, numKeyframes = 0;
+  bool ok = std::fread(magic, 1, 8, f) == 8 && std::memcmp(magic, kKeyframesMagic, 8) == 0 &&
+            rd(f, numCameras) && rd(f, vprDim) && rd(f, numKeyframes);
+  OKVIS_ASSERT_TRUE(Exception, ok, "not a MOWEKF01 file: " << path)
+  OKVIS_ASSERT_TRUE(Exception, numCameras == cameraSystem.numCameras(),
+                    "keyframes.bin has " << numCameras << " cameras, config has " << cameraSystem.numCameras())
+  OKVIS_ASSERT_TRUE(Exception, int(vprDim) == L.vocabulary.desc_dim(),
+                    "keyframes.bin VPR dim " << vprDim << " != vocabulary " << L.vocabulary.desc_dim())
+  size_t numLandmarks = 0;
+  for (uint32_t n = 0; n < numKeyframes && ok; ++n) {
+    uint64_t id = 0;
+    int64_t t_ns = 0;
+    double r[3], q[4];
+    ok = rd(f, id) && rd(f, t_ns);
+    for (int i = 0; i < 3 && ok; ++i) ok = rd(f, r[i]);
+    for (int i = 0; i < 4 && ok; ++i) ok = rd(f, q[i]);
+    Eigen::VectorXf desc(vprDim);
+    ok = ok && std::fread(desc.data(), sizeof(float), vprDim, f) == vprDim;
+    std::shared_ptr<MultiFrame> mf(new MultiFrame(cameraSystem, okvis::Time().fromNSec(uint64_t(t_ns)), id));
+    for (uint32_t im = 0; im < numCameras && ok; ++im) {
+      uint32_t K = 0;
+      ok = rd(f, K);
+      std::vector<cv::KeyPoint> kps(K);
+      cv::Mat descriptors(int(K), kFloatDescriptorDim, CV_32FC1);
+      std::vector<uint64_t> lmIds(K);
+      std::vector<Eigen::Vector4d, Eigen::aligned_allocator<Eigen::Vector4d>> hps(K);
+      std::vector<bool> init(K);
+      for (uint32_t k = 0; k < K && ok; ++k) {
+        float x, y, size, response;
+        ok = rd(f, x) && rd(f, y) && rd(f, size) && rd(f, response);
+        kps[k] = cv::KeyPoint(x, y, size, -1.f, response);
+        ok = ok && std::fread(descriptors.ptr<float>(int(k)), sizeof(float), size_t(kFloatDescriptorDim), f) == size_t(kFloatDescriptorDim);
+        uint8_t initialised = 0;
+        ok = ok && rd(f, lmIds[k]) && rd(f, initialised);
+        for (int i = 0; i < 4 && ok; ++i) ok = rd(f, hps[k][i]);
+        init[k] = initialised != 0;
+      }
+      if (!ok) break;
+      mf->resetKeypoints(im, kps);
+      mf->resetDescriptors(im, descriptors);
+      for (uint32_t k = 0; k < K; ++k) {
+        mf->setLandmarkId(im, k, lmIds[k]);
+        mf->setLandmark(im, k, hps[k], init[k]);
+        if (init[k]) ++numLandmarks;
+      }
+    }
+    if (!ok) break;
+    L.foreignDb.add(int(L.foreignFrames.size()), desc);
+    L.foreignFrames.push_back(mf);
+    L.foreignIds.push_back(id);
+  }
+  std::fclose(f);
+  OKVIS_ASSERT_TRUE(Exception, ok, "truncated keyframes.bin: " << path)
+  LOG(INFO) << "foreign map loaded from " << path << ": " << L.foreignFrames.size()
+            << " keyframes, " << numLandmarks << " landmarks (retrieval + verification only)";
+  return true;
+#else
+  (void)path; (void)cameraSystem;
+  OKVIS_THROW(Exception, "--preload-map needs a USE_MOWE_XFEAT build")
+  return false;
+#endif
 }
 
 // Descriptor metric seam (okvis/DescriptorDistance.hpp, T-0112): the matching
@@ -656,8 +1071,35 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
     }
   }
 
-  // match
-  for (auto iter = landmarks.begin(); iter != landmarks.end(); ++iter) {
+  // match. T-0120: on the XFeat path with a LighterGlue engine, match old->new
+  // per camera with LighterGlue (KB 02 decision table: loop verification is the
+  // wide-baseline stage) and keep the proposals that land on an initialised
+  // landmark; otherwise the brute-force descriptor search below.
+  bool lighterGlueMatched = false;
+  if (floatDescriptors() && usingXFeat()) {
+    std::vector<int> newForOld;
+    for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
+      if (!lighterGluePairProposals(*oldFrame, im, *framesInOut, im, newForOld)) {
+        break;
+      }
+      lighterGlueMatched = true;
+      for (size_t kOld = 0; kOld < oldFrame->numKeypoints(im); ++kOld) {
+        const int kNew = newForOld[kOld];
+        const uint64_t lmId = oldFrame->landmarkId(im, kOld);
+        if (kNew < 0 || lmId == 0 || !landmarks.count(LandmarkId(lmId))) {
+          continue;
+        }
+        const KeypointIdentifier kid(framesInOut->id(), im, size_t(kNew));
+        if (matches.count(kid)) {
+          continue;
+        }
+        ctr++;
+        points[lmId] = landmarks.at(LandmarkId(lmId));
+        matches[kid] = lmId;
+      }
+    }
+  }
+  for (auto iter = landmarks.begin(); !lighterGlueMatched && iter != landmarks.end(); ++iter) {
     for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
 
       if(framesInOut->numKeypoints(im) == 0) {
@@ -694,41 +1136,30 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
     return false;
   }
 
-  // run 3d2d RANSAC
-  // create a AbsolutePoseSac problem and RANSAC
-  opengv::absolute_pose::LoopclosureNoncentralAbsoluteAdapter adapter(points,
-                                                                      matches,
-                                                                      framesInOut->cameraSystem(),
-                                                                      framesInOut);
-  typedef opengv::sac_problems::absolute_pose::FrameAbsolutePoseSacProblem<
-    opengv::absolute_pose::LoopclosureNoncentralAbsoluteAdapter>
-    LoopclosureAbsoluteModel;
-  opengv::sac::Ransac<LoopclosureAbsoluteModel> ransac;
-  std::shared_ptr<LoopclosureAbsoluteModel> absposeproblem_ptr(
-    new LoopclosureAbsoluteModel(adapter, LoopclosureAbsoluteModel::Algorithm::GP3P));
-  ransac.sac_model_ = absposeproblem_ptr;
-  ransac.threshold_ = 16;
-  ransac.max_iterations_ = 50;
-  // initial guess not needed...
-  // run the ransac
-  if (adapter.getNumberCorrespondences() < 7) {
-    return false;
-  }
+  // run 3d2d RANSAC (okvis/LoopClosureGates.hpp, T-0120: shared with the gtest).
+  // Threshold: upstream's 16 (~5 px) for BRISK; vpr.reproj_px on the VPR path.
+  const double ransacThreshold = (floatDescriptors() && vprLoop_)
+      ? loopclosure::ransacThresholdFromPixels(vprParams_.reproj_px, xfeatParams_.keypoint_size)
+      : 16.0;
   TimerSwitchable ransacLoopClosureTimer("2.05 loop closure ransacking");
-  ransac.computeModel(0);
-  const int numInliers = int(ransac.inliers_.size());
-  const double inlierRatio = double(ransac.inliers_.size())
-                             / double(adapter.getNumberCorrespondences());
-
+  std::vector<bool> inliers;
+  std::vector<size_t> ransacCamIndices, ransacKeypointIndices;
+  const int numInliers = loopclosure::ransacAbsolutePose(
+      points, matches, framesInOut, ransacThreshold, 50, T_Sold_Snew, inliers,
+      ransacCamIndices, ransacKeypointIndices);
   ransacLoopClosureTimer.stop();
-  if (numInliers < minInliers || inlierRatio < 0.7) {
+  const size_t numCorrespondences = inliers.size();
+  if (numCorrespondences < 7) {
     return false;
   }
-  // remember inliers
-  const size_t numCorrespondences = adapter.getNumberCorrespondences();
-  std::vector<bool> inliers(numCorrespondences, false);
-  for (size_t i = 0; i < ransac.inliers_.size(); ++i) {
-    inliers.at(size_t(ransac.inliers_.at(i))) = true;
+  // Inlier-ratio floor: upstream's 0.7 for BRISK brute-force matches; on the VPR
+  // path the correspondences are LighterGlue proposals on ~6 px-noise fisheye
+  // XFeat keypoints (T-0113 open item), so at reproj_px 2 the ratio is ~0.47
+  // for TRUE revisits (loop_verify_offline sweep, T-0120) — min_inlier_ratio.
+  const double minInlierRatio = (floatDescriptors() && vprLoop_) ? vprParams_.min_inlier_ratio : 0.7;
+  const double inlierRatio = double(numInliers) / double(numCorrespondences);
+  if (numInliers < minInliers || inlierRatio < minInlierRatio) {
+    return false;
   }
 
   // check distinciveness of survived matches (BRISK bit statistics — skipped
@@ -736,7 +1167,7 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
   if (!floatDescriptors()) {
   float sum = 0.0;
   for (size_t im = 0; im < numCameras_; ++im) {
-    Eigen::Matrix<float, Eigen::Dynamic, 48 * 8> descriptorMatrix(ransac.inliers_.size(), 48 * 8);
+    Eigen::Matrix<float, Eigen::Dynamic, 48 * 8> descriptorMatrix(numInliers, 48 * 8);
     int inlierCtr = 0;
     int ctr2 = 0;
     for (const auto &match : matches) {
@@ -770,8 +1201,8 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
     }
   }
 
-  const float avg = sum / float(ransac.inliers_.size());
-  if (avg < 182.0 && ransac.inliers_.size() < 20) {
+  const float avg = sum / float(numInliers);
+  if (avg < 182.0 && numInliers < 20) {
     LOG(INFO) << framesInOut->id() << "->" << oldFrame->id() << " : "
               << "Rejecting loop closure due to indistincive descriptors (" << avg << ")";
     return false;
@@ -781,9 +1212,6 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
   // refine
   TimerSwitchable loopClosureRefinementTimer("2.06 loop closure pose refinement");
   const uint64_t frameId = framesInOut->id();
-  Eigen::Matrix4d T_Sold_Snew_mat = Eigen::Matrix4d::Identity();
-  T_Sold_Snew_mat.topLeftCorner<3, 4>() = ransac.model_coefficients_;
-  T_Sold_Snew = kinematics::Transformation(T_Sold_Snew_mat);
 
   // set up ceres problem
   ::ceres::Problem::Options problemOptions;
@@ -815,8 +1243,8 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
   for (size_t k = 0; k < numCorrespondences; ++k) {
     if (inliers[k]) {
       // get the landmark id:
-      size_t camIdx = size_t(adapter.camIndex(k));
-      size_t keypointIdx = size_t(adapter.keypointIndex(k));
+      size_t camIdx = ransacCamIndices[k];
+      size_t keypointIdx = ransacKeypointIndices[k];
       KeypointIdentifier kid(frameId, camIdx, keypointIdx);
       uint64_t lmId = matches.at(kid);
       std::shared_ptr<ceres::ParameterBlock> landmark;
@@ -937,10 +1365,10 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
     }
   }
 
-  const int numFinalInliers = int(ransac.inliers_.size())-additionalOutliers;
+  const int numFinalInliers = numInliers-additionalOutliers;
   const double finalInlierRatio = double(numFinalInliers)
-                             / double(adapter.getNumberCorrespondences());
-  if (numFinalInliers < minInliers || finalInlierRatio < 0.7) {
+                             / double(numCorrespondences);
+  if (numFinalInliers < minInliers || finalInlierRatio < minInlierRatio) {
     return false;
   }
 
@@ -1212,47 +1640,119 @@ bool Frontend::dataAssociationAndInitialization(
   }
 
   /*LOOP CLOSURES*/
-  if(!floatDescriptors() && params.estimator.do_loop_closures && !estimator.isLoopClosing()
+  // T-0120 (mowe-nav-kb 06 §adapter, ADR-0042): on the float-descriptor path the
+  // DBoW2 query is replaced by VPR retrieval (DINOv2 + VLAD, mowe_vpr) at keyframe
+  // rate; candidates pass the Mahalanobis prior gate, LighterGlue + GP3P RANSAC
+  // (verifyRecognisedPlace) and temporal consistency before the UNCHANGED
+  // attemptLoopClosure / addLoopClosureFrame / landmark-revival path below.
+  const bool vprMode = floatDescriptors();
+  bool vprQueried = false;
+  if (vprMode && vprLoop_ && *asKeyframe && !kfPrior) {
+    vprEmbedCurrent(*framesInOut);
+  }
+  if(params.estimator.do_loop_closures && (!vprMode || vprLoop_) && !estimator.isLoopClosing()
       && !estimator.isLoopClosureAvailable()
       && !estimator.needsFullGraphOptimisation() && isInitialized_) {
     TimerSwitchable matchDBoWTimer("2.03 loop closure query");
     std::vector<std::pair<StateId, double>> stateIds;
-    dBow();  // ensure the BRISK vocabulary is loaded (lazy, T-0112)
-    getFilteredDBoWResult(dBow_, features, stateIds);
+    double pMin = params.estimator.p_dbow;
+    int minInliers = 10;
+    size_t maxAttempts = 10;
+    if (vprMode) {
+      pMin = vprParams_.score_min;
+      minInliers = vprParams_.min_inliers;
+#ifdef OKVIS_USE_MOWE_XFEAT
+      if (vprLoop_->haveCurrentDesc && vprLoop_->currentDescFrameId == framesInOut->id()) {
+        vprQueried = true;
+        vprQuery(estimator, params, framesInOut, stateIds);
+        maxAttempts = std::max(size_t(10), vprLoop_->entries.size() / 20);
+      }
+#endif
+    } else {
+      dBow();  // ensure the BRISK vocabulary is loaded (lazy, T-0112)
+      getFilteredDBoWResult(dBow_, features, stateIds);
+      maxAttempts = std::max(size_t(10), dBow().poseIds.size() / 20);
+    }
     matchDBoWTimer.stop();
     TimerSwitchable attemptLoopClosureTimer("2.07 attempt loop closure", true);
     // nonmax suppression
     size_t attempts = 0;
+    bool vprVerified = false;
     for(const auto & id : stateIds) {
       // start with oldest keyframe match
       const double p = id.second;
       // get old multiframe
-      if(attempts > std::max(size_t(10),dBow().poseIds.size()/20)) break;
-      if(p > params.estimator.p_dbow) {
+      if(attempts > maxAttempts) break;
+      if(p > pMin) {
 
         const std::shared_ptr<const MultiFrame> oldFrame = estimator.multiFrame(id.first);
         /// \todo move to separate thread
         // check if already existing loop closure or matching against current frame
-        if(!estimator.isPoseGraphFrame(id.first)) {
+        if(!oldFrame || !estimator.isPoseGraphFrame(id.first)
+           || estimator.isLoopClosureFrame(id.first)
+           || estimator.isRecentLoopClosureFrame(id.first)
+           || !estimator.isPlaceRecognitionFrame(id.first)) {
+          if (vprMode) ++loopStats_.candidatesSkippedState;
           continue;
         }
-        if(estimator.isLoopClosureFrame(id.first)) {
-          continue;
-        }
-        if(estimator.isRecentLoopClosureFrame(id.first)) {
-          continue;
-        }
-        if(!estimator.isPlaceRecognitionFrame(id.first)) {
-          continue;
+        // T-0120 prior gate (KB 06 defence #1): candidate pose vs the current VIO
+        // estimate under a drift-model covariance. Without RTK this is the VIO's
+        // own consistency; with ADR-0042 GNSS factors the same estimate carries it.
+        if (vprMode) {
+          loopclosure::PriorGateParams gate;
+          gate.sigma_pos_floor_m = vprParams_.prior_sigma_pos_m;
+          gate.drift_frac = vprParams_.prior_drift_frac;
+          gate.sigma_rot_rad = vprParams_.prior_sigma_rot_deg * M_PI / 180.0;
+          double pathLength = 0.0;
+#ifdef OKVIS_USE_MOWE_XFEAT
+          {
+            const VprLoop& L = *vprLoop_;
+            const kinematics::Transformation T_WS_now = estimator.pose(StateId(framesInOut->id()));
+            const double toNow = L.haveLast ? (T_WS_now.r() - L.r_last).norm() : 0.0;
+            pathLength = L.cumDist + toNow - L.entries.at(size_t(L.indexOfState.at(id.first.value()))).cumDist;
+          }
+#endif
+          const double m = loopclosure::priorMahalanobis(
+              estimator.pose(StateId(framesInOut->id())), estimator.pose(id.first), pathLength, gate);
+          loopStats_.priorMahalanobis.push_back(m);
+          if (m > vprParams_.prior_gate_sigma) {
+            ++loopStats_.rejectedByPriorGate;
+            LOG(INFO) << "VPR candidate " << id.first.value() << " for frame " << framesInOut->id()
+                      << " rejected by prior gate: " << m << " sigma (score " << p
+                      << ", path " << pathLength << " m)";
+            continue;
+          }
         }
         // verify with RANSAC and refine
         kinematics::Transformation T_Sold_Snew;
         Eigen::Matrix<double, 6, 6> H;
-        if (!verifyRecognisedPlace(estimator, params, framesInOut, oldFrame, T_Sold_Snew, H, 10)) {
+        const auto tVerify0 = std::chrono::steady_clock::now();
+        const bool verified = verifyRecognisedPlace(estimator, params, framesInOut, oldFrame,
+                                                    T_Sold_Snew, H, minInliers);
+        if (vprMode) {
+          loopStats_.verificationMs.push_back(std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - tVerify0).count());
+        }
+        if (!verified) {
+          if (vprMode) ++loopStats_.rejectedByGeometry;
           attempts++;
           continue;
         }
         attempts++;
+        // T-0120 temporal consistency (KB 06 defence #2): one vote per keyframe
+        // query — the strongest verified candidate — must agree with the previous
+        // consecutive_required-1 keyframes' verified candidates.
+        if (vprMode) {
+          vprVerified = true;
+#ifdef OKVIS_USE_MOWE_XFEAT
+          if (!vprLoop_->temporal.push(vprLoop_->indexOfState.at(id.first.value()))) {
+            ++loopStats_.rejectedByTemporal;
+            LOG(INFO) << "VPR candidate " << id.first.value() << " for frame " << framesInOut->id()
+                      << " verified (score " << p << ") but waiting for temporal consistency";
+            break;
+          }
+#endif
+        }
         // enforce relative transformation
         attemptLoopClosureTimer.start();
         bool skipFullGraphOptimisation = false;
@@ -1265,6 +1765,10 @@ bool Frontend::dataAssociationAndInitialization(
         if(!loopClosureAttemptSuccessful) {
           LOG(INFO) << "unsuccessful loop closure frame "<< id.first.value();
           attemptLoopClosureTimer.stop();
+          if (vprMode) {
+            ++loopStats_.rejectedByEstimator;
+            break;
+          }
           continue;
         }
         attemptLoopClosureTimer.stop();
@@ -1310,6 +1814,7 @@ bool Frontend::dataAssociationAndInitialization(
         {
           std::lock_guard<std::mutex> lock(statsMutex_);
           ++stats_.loopClosures;
+          if (vprMode) ++loopStats_.loopsAccepted;
         }
 
         matchLoopClosureTimer.stop();
@@ -1324,11 +1829,20 @@ bool Frontend::dataAssociationAndInitialization(
         break; // only consider oldest keyframe match.
       }
     }
-    // if keyframe, we add to relocalisation database
-    if(*asKeyframe && !kfPrior) {
+#ifdef OKVIS_USE_MOWE_XFEAT
+    if (vprMode && vprQueried && !vprVerified) {
+      vprLoop_->temporal.miss();
+    }
+#endif
+    // if keyframe, we add to relocalisation database (VPR: below, also while the
+    // estimator is busy loop-closing — the database must not skip keyframes)
+    if(!vprMode && *asKeyframe && !kfPrior) {
       dBow().database.add(features);
       dBow().poseIds.push_back(framesInOut->id());
     }
+  }
+  if (vprMode && vprLoop_ && *asKeyframe && !kfPrior) {
+    vprAddCurrent(estimator, *framesInOut);
   }
 
 

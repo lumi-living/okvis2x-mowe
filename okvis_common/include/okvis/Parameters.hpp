@@ -126,6 +126,29 @@ struct XFeatParameters {
 };
 
 /**
+ * @brief VPR loop-closure parameters (Mow-e T-0120, mowe-nav-kb 06 §adapter/§aliasing,
+ *        ADR-0042): DINOv2+VLAD retrieval replaces DBoW2 on the float-descriptor path.
+ *        Candidate chain: retrieval (top_k, score_min) -> Mahalanobis prior gate ->
+ *        LighterGlue match -> OpenGV GP3P RANSAC (min_inliers, reproj_px) -> temporal
+ *        consistency (consecutive_required) -> ViSlamBackend::attemptLoopClosure.
+ */
+struct VprLoopParameters {
+  std::string engine; ///< DINOv2 .plan (tools/onnx/export_dinov2.py); "" = VPR loop closure off.
+  std::string vocabulary; ///< mowe_vpr MOWEVOC2 vocabulary (k-means + PCA whitening).
+  int top_k = 3; ///< Retrieval candidates per keyframe query.
+  double score_min = 0.40; ///< Min whitened-VLAD cosine to consider a candidate (T-0119 calibration).
+  double prior_gate_sigma = 3.0; ///< Reject candidates beyond this many sigmas of the pose prior.
+  double prior_sigma_pos_m = 0.3; ///< Position sigma floor of the prior [m].
+  double prior_drift_frac = 0.0135; ///< Position sigma grows by this fraction of the path length between the frames.
+  double prior_sigma_rot_deg = 30.0; ///< Orientation sigma of the prior [deg].
+  int min_inliers = 20; ///< Min RANSAC (and refined) inliers.
+  double reproj_px = 2.0; ///< RANSAC reprojection threshold [px].
+  double min_inlier_ratio = 0.4; ///< Min RANSAC/refined inliers over LighterGlue landmark correspondences (BRISK path keeps upstream's 0.7).
+  int consecutive_required = 2; ///< Verified candidates from this many consecutive keyframe queries must agree.
+  int consecutive_max_gap = 5; ///< ...within this many database keyframes of each other.
+};
+
+/**
  * @brief Parameters for detection etc.
  */
 struct FrontendParameters {
@@ -139,6 +162,7 @@ struct FrontendParameters {
   bool parallelise_detection; ///< Run parallel detect & describe.
   int num_matching_threads; ///< Parallelise matching with this number of threads.
   XFeatParameters xfeat; ///< XFeat/LighterGlue frontend (Mow-e ADR-0040); off by default.
+  VprLoopParameters vpr; ///< VPR loop closure (Mow-e T-0120); off unless vpr.engine is set.
 };
 
 /**

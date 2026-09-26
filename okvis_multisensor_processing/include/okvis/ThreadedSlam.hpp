@@ -182,6 +182,10 @@ class ThreadedSlam : public ViInterface {
 
   /// \brief Read access to the frontend (Mow-e T-0113: stats on exit).
   const okvis::Frontend& frontend() const { return frontend_; }
+  /// \brief Write access (Mow-e T-0120: --preload-map before streaming starts).
+  okvis::Frontend& frontend() { return frontend_; }
+  /// \brief Write the VPR keyframe database (T-0120 keyframes.bin); false if VPR is off.
+  bool saveKeyframes(const std::string& path) const { return frontend_.saveKeyframes(estimator_, path); }
 
   /// \brief Runs main processing iteration, call in your main loop.
   bool processFrame();

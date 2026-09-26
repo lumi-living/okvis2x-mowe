@@ -341,6 +341,36 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
                       "frontend_parameters: xfeat: use requires an engine path")
   }
 
+  // Optional VPR loop-closure block (Mow-e T-0120). Absent == no VPR loop closure
+  // (the float-descriptor path then runs as VIO regardless of do_loop_closures).
+  const cv::FileNode vprNode = file["frontend_parameters"]["vpr"];
+  if (!vprNode.empty()) {
+    VprLoopParameters& vpr = viParameters_.frontend.vpr;
+    const auto readPath = [](const cv::FileNode& node) {
+      std::string s = std::string(node);
+      return s.substr(0, s.find_first_of(" \t"));
+    };
+    if (vprNode["engine"].isString()) {
+      vpr.engine = readPath(vprNode["engine"]);
+    }
+    if (vprNode["vocabulary"].isString()) {
+      vpr.vocabulary = readPath(vprNode["vocabulary"]);
+    }
+    parseEntry(vprNode, "top_k", vpr.top_k);
+    parseEntry(vprNode, "score_min", vpr.score_min);
+    parseEntry(vprNode, "prior_gate_sigma", vpr.prior_gate_sigma);
+    parseEntry(vprNode, "prior_sigma_pos_m", vpr.prior_sigma_pos_m);
+    parseEntry(vprNode, "prior_drift_frac", vpr.prior_drift_frac);
+    parseEntry(vprNode, "prior_sigma_rot_deg", vpr.prior_sigma_rot_deg);
+    parseEntry(vprNode, "min_inliers", vpr.min_inliers);
+    parseEntry(vprNode, "reproj_px", vpr.reproj_px);
+    parseEntry(vprNode, "min_inlier_ratio", vpr.min_inlier_ratio);
+    parseEntry(vprNode, "consecutive_required", vpr.consecutive_required);
+    parseEntry(vprNode, "consecutive_max_gap", vpr.consecutive_max_gap);
+    OKVIS_ASSERT_TRUE(Exception, vpr.engine.empty() || !vpr.vocabulary.empty(),
+                      "frontend_parameters: vpr: engine requires a vocabulary path")
+  }
+
   // Parameters regarding the estimator.
   parseEntry(file["estimator_parameters"], "num_keyframes",
              viParameters_.estimator.num_keyframes);

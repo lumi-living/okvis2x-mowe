@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <memory>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include <Eigen/Core>
 
@@ -52,11 +54,28 @@ int main(int argc, char **argv)
   FLAGS_colorlogtostderr = 1;
   FLAGS_minloglevel = 0;
 
+  // mowe (T-0120): `--preload-map <keyframes.bin>` loads another run's VPR
+  // keyframe database as a foreign map (verified + counted only). Stripped
+  // from argv before the positional parsing below.
+  std::string preloadMap;
+  {
+    std::vector<char*> args;
+    for (int i = 0; i < argc; ++i) {
+      if (std::string(argv[i]) == "--preload-map" && i + 1 < argc) {
+        preloadMap = argv[++i];
+      } else {
+        args.push_back(argv[i]);
+      }
+    }
+    argc = int(args.size());
+    for (int i = 0; i < argc; ++i) argv[i] = args[size_t(i)];
+  }
+
   // mowe: argc == 3 (config + dataset only) is accepted and saves to the
   // current directory, so the overnight verify can `cd out/<ticket> && run` (T-0107).
   if (argc < 3 || argc > 5) {
     LOG(ERROR)<<
-    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [save-folder] [-rpg]";
+    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [save-folder] [-rpg] [--preload-map keyframes.bin]";
     return EXIT_FAILURE;
   }
 
@@ -111,6 +130,13 @@ int main(int argc, char **argv)
 
   okvis::ThreadedSlam estimator(parameters, dBowVocDir);
   estimator.setBlocking(true);
+  if (!preloadMap.empty()) {
+    // T-0120: foreign map = retrieval database of another run (false-loop test).
+    if (!estimator.frontend().loadForeignKeyframes(preloadMap, parameters.nCameraSystem)) {
+      LOG(ERROR) << "cannot load --preload-map " << preloadMap;
+      return EXIT_FAILURE;
+    }
+  }
 
   // write logs
   std::string mode = "slam";
@@ -210,6 +236,11 @@ int main(int argc, char **argv)
       LOG(INFO) <<"total processing time " << (okvis::Time::now() - startTime) << " s" << std::endl;
       // mowe: front-end statistics next to the trajectories (T-0113).
       estimator.frontend().writeStatsJson(savePath+"/frontend_stats.json");
+      // mowe (T-0120): VPR loop-closure funnel + this run's keyframe database.
+      if (estimator.frontend().usingVprLoopClosure()) {
+        estimator.frontend().writeLoopStatsJson(savePath+"/loop_stats.json");
+        estimator.saveKeyframes(savePath+"/keyframes.bin");
+      }
       break;
     }
 

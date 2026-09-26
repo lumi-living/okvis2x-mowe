@@ -27,6 +27,7 @@
   <depend>std_srvs</depend>
   <depend>lifecycle_msgs</depend> <!-- mow-e: okvis2x_node_mowe (USE_MOWE_XFEAT) -->
   <depend>mowe_camera</depend> <!-- mow-e: okvis_xfeat_frontend links mowe_camera_core (USE_MOWE_XFEAT); orders the colcon build -->
+  <depend>mowe_vpr</depend> <!-- mow-e (T-0120): VPR loop closure on the float path links mowe_vpr::embedder (USE_MOWE_XFEAT) -->
   <depend>sensor_msgs</depend>
   <depend>mowe_msgs</depend> <!-- mow-e (T-0117): /gnss/enu in, gnss_alignment_status out (ADR-0042) -->
   <depend>visualization_msgs</depend>

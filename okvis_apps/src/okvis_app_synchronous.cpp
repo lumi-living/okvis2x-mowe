@@ -41,6 +41,8 @@
 #include <boost/filesystem.hpp>
 
 #include <execinfo.h>
+#include <mutex>
+#include <set>
 
 
 /// \brief Main
@@ -58,11 +60,19 @@ int main(int argc, char **argv)
   // keyframe database as a foreign map (verified + counted only). Stripped
   // from argv before the positional parsing below.
   std::string preloadMap;
+  // mowe (T-0124): `--states-log <file.jsonl>` records what the ROS wrapper publishes
+  // (okvis2x_node_mowe): every IMU-propagated body pose ("prop") and every
+  // optimised-graph callback with T_GW + gpsStatus ("opt"), so
+  // mowe_localization_outputs can be replayed on the device without the estimator
+  // (replay_okvis_states). Format: docs in onboard/localization/mowe_localization_outputs/README.md.
+  std::string statesLog;
   {
     std::vector<char*> args;
     for (int i = 0; i < argc; ++i) {
       if (std::string(argv[i]) == "--preload-map" && i + 1 < argc) {
         preloadMap = argv[++i];
+      } else if (std::string(argv[i]) == "--states-log" && i + 1 < argc) {
+        statesLog = argv[++i];
       } else {
         args.push_back(argv[i]);
       }
@@ -149,17 +159,67 @@ int main(int argc, char **argv)
 
   const bool isWriteRpg = false;
   okvis::TrajectoryOutput writer(savePath+"/okvis2-" + mode + "_trajectory.csv", isWriteRpg, parameters.output.display_topview);
+  // mowe (T-0124): JSONL states log, same content as the /okvis_odometry +
+  // /okvis2x/estimator_state topics of okvis2x_node_mowe (ADR-0042 §(4)). The
+  // propagation mirrors okvis::Publisher::realtimePredictAndPublish (okvis::Trajectory fed
+  // with every IMU sample, updated at each callback); poses are T_WB via the static T_BS.
+  struct StatesLog {
+    std::ofstream f;
+    std::mutex m;
+    okvis::Trajectory trajectory;
+    okvis::kinematics::Transformation T_SB;
+    okvis::Time lastGps;  // latest state time that carries a gated GNSS factor
+    static std::string pose(const okvis::kinematics::Transformation& T) {
+      char b[256];
+      snprintf(b, sizeof b, "[%.6f,%.6f,%.6f,%.9f,%.9f,%.9f,%.9f]", T.r()[0], T.r()[1], T.r()[2],
+               T.q().x(), T.q().y(), T.q().z(), T.q().w());
+      return b;
+    }
+    void imu(const okvis::Time& t, const Eigen::Vector3d& acc, const Eigen::Vector3d& gyr) {
+      std::lock_guard<std::mutex> l(m);
+      okvis::State s;
+      if (!trajectory.addImuMeasurement(t, acc, gyr, s)) return;
+      f << "{\"type\":\"prop\",\"t_ns\":" << uint64_t(t.toNSec()) << ",\"T_WB\":" << pose(s.T_WS * T_SB)
+        << ",\"v_W\":[" << s.v_W[0] << "," << s.v_W[1] << "," << s.v_W[2] << "]}\n";
+    }
+    void opt(const okvis::State& state, const okvis::TrackingState& ts,
+             std::shared_ptr<const okvis::AlignedMap<okvis::StateId, okvis::State>> updated,
+             int gpsStatus) {
+      std::lock_guard<std::mutex> l(m);
+      std::set<okvis::StateId> affected;
+      trajectory.update(ts, updated, affected);
+      for (const auto& u : *updated)
+        if (!u.second.gpsPoints.empty() && u.second.timestamp > lastGps) lastGps = u.second.timestamp;
+      f << "{\"type\":\"opt\",\"t_ns\":" << uint64_t(state.timestamp.toNSec()) << ",\"id\":" << state.id.value()
+        << ",\"T_WB\":" << pose(state.T_WS * T_SB) << ",\"T_GW\":" << pose(state.T_GW)
+        << ",\"status\":" << gpsStatus << ",\"quality\":" << int(ts.trackingQuality)
+        << ",\"keyframe\":" << (ts.isKeyframe ? 1 : 0) << ",\"loop\":" << (ts.recognisedPlace ? 1 : 0)
+        << ",\"n_updated\":" << updated->size() << ",\"t_last_gps_ns\":" << uint64_t(lastGps.toNSec()) << "}\n";
+    }
+  } statesLogWriter;
+  if (!statesLog.empty()) {
+    statesLogWriter.f.open(statesLog);
+    if (!statesLogWriter.f) { LOG(ERROR) << "cannot open --states-log " << statesLog; return EXIT_FAILURE; }
+    statesLogWriter.T_SB = parameters.imu.T_BS.inverse();
+    LOG(INFO) << "writing states log to " << statesLog;
+  }
   estimator.setOptimisedGraphCallback(
-        std::bind(&okvis::TrajectoryOutput::processState, &writer,
-                  std::placeholders::_1, std::placeholders::_2, std::placeholders::_3,
-                  std::placeholders::_4));
+        [&](const okvis::State& state, const okvis::TrackingState& ts,
+            std::shared_ptr<const okvis::AlignedMap<okvis::StateId, okvis::State>> updatedStates,
+            std::shared_ptr<const okvis::MapPointVector> landmarks) {
+          writer.processState(state, ts, updatedStates, landmarks);
+          if (statesLogWriter.f.is_open()) statesLogWriter.opt(state, ts, updatedStates, estimator.gpsAlignmentStatus());
+        });
   estimator.setFinalTrajectoryCsvFile(savePath+"/okvis2-" + mode + "-final_trajectory.csv", isWriteRpg);
   estimator.setMapCsvFile(savePath+"/okvis2-" + mode + "-final_map.csv");
 
   // connect reader to estimator
   datasetReader->setImuCallback(
-        std::bind(&okvis::ThreadedSlam::addImuMeasurement, &estimator,
-                  std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+        [&](const okvis::Time& t, const Eigen::Vector3d& acc, const Eigen::Vector3d& gyr) {
+          const bool ok = estimator.addImuMeasurement(t, acc, gyr);
+          if (statesLogWriter.f.is_open()) statesLogWriter.imu(t, acc, gyr);
+          return ok;
+        });
   datasetReader->setImagesCallback(
         std::bind(&okvis::ThreadedSlam::addImages, &estimator, std::placeholders::_1,
                   std::placeholders::_2, std::placeholders::_3));

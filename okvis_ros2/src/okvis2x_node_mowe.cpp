@@ -54,7 +54,8 @@
 #include <lifecycle_msgs/srv/change_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <mowe_msgs/msg/gnss_alignment_status.hpp> // T-0117
+#include <mowe_msgs/msg/gnss_alignment_status.hpp>
+#include <mowe_msgs/msg/estimator_state.hpp>         // T-0124
 #include <mowe_msgs/msg/gnss_enu.hpp>              // T-0117
 #include <std_srvs/srv/set_bool.hpp>
 
@@ -203,7 +204,8 @@ int main(int argc, char **argv) {
 
   // Parameters.
   node->declare_parameter("config_filename", "");
-  node->declare_parameter("imu_propagated_state_publishing_rate", 0.0);
+  // ADR-0042 §(4): the IMU-propagated state is the odom→base_link source at 200 Hz (T-0124).
+  node->declare_parameter("imu_propagated_state_publishing_rate", 200.0);
   node->declare_parameter("camera_type", "arducam_ov9281");
   node->declare_parameter("camera_device", "/dev/video1");
   node->declare_parameter("camera_fps", 50.0);
@@ -282,14 +284,42 @@ int main(int argc, char **argv) {
   publisher.setBodyTransform(parameters.imu.T_BS);
   publisher.setOdometryPublishingRate(imu_propagated_state_publishing_rate);
   publisher.setupImageTopics(parameters.nCameraSystem);
+  // T-0124 (ADR-0042 §(4)): one EstimatorState per optimised-graph callback — T_WB,
+  // T_GW, gpsStatus, tracking quality — for mowe_localization_outputs, which composes
+  // T_GB and owns map→odom→base_link. The propagated state keeps going out as
+  // /okvis_odometry (world→body) via okvis::Publisher at the rate above.
+  auto estimatorStatePublisher = node->create_publisher<mowe_msgs::msg::EstimatorState>(
+      "/okvis2x/estimator_state", rclcpp::QoS(10).reliable());
+  const okvis::kinematics::Transformation T_SB = parameters.imu.T_BS.inverse();
+  okvis::Time lastGpsStateTime;
   estimator.setOptimisedGraphCallback(
-      [&publisher](const okvis::State &state,
-                   const okvis::TrackingState &trackingState,
-                   std::shared_ptr<const okvis::AlignedMap<okvis::StateId, okvis::State>>
-                       updatedStates,
-                   std::shared_ptr<const okvis::MapPointVector> landmarks) {
+      [&](const okvis::State &state,
+          const okvis::TrackingState &trackingState,
+          std::shared_ptr<const okvis::AlignedMap<okvis::StateId, okvis::State>>
+              updatedStates,
+          std::shared_ptr<const okvis::MapPointVector> landmarks) {
         publisher.publishEstimatorUpdate(state, trackingState, updatedStates,
                                          landmarks);
+        mowe_msgs::msg::EstimatorState msg;
+        msg.header.stamp = rclcpp::Time(state.timestamp.sec, state.timestamp.nsec);
+        msg.header.frame_id = "odom";
+        msg.state_id = state.id.value();
+        const okvis::kinematics::Transformation T_WB = state.T_WS * T_SB;
+        msg.pose_wb.position.x = T_WB.r()[0]; msg.pose_wb.position.y = T_WB.r()[1]; msg.pose_wb.position.z = T_WB.r()[2];
+        msg.pose_wb.orientation.x = T_WB.q().x(); msg.pose_wb.orientation.y = T_WB.q().y();
+        msg.pose_wb.orientation.z = T_WB.q().z(); msg.pose_wb.orientation.w = T_WB.q().w();
+        msg.t_gw.translation.x = state.T_GW.r()[0]; msg.t_gw.translation.y = state.T_GW.r()[1]; msg.t_gw.translation.z = state.T_GW.r()[2];
+        msg.t_gw.rotation.x = state.T_GW.q().x(); msg.t_gw.rotation.y = state.T_GW.q().y();
+        msg.t_gw.rotation.z = state.T_GW.q().z(); msg.t_gw.rotation.w = state.T_GW.q().w();
+        msg.alignment_status = uint8_t(estimator.gpsAlignmentStatus());
+        msg.tracking_quality = trackingState.trackingQuality == okvis::TrackingQuality::Good ? 1.0f
+                             : trackingState.trackingQuality == okvis::TrackingQuality::Marginal ? 0.3f : 0.0f;
+        msg.is_keyframe = trackingState.isKeyframe;
+        msg.loop_closed = trackingState.recognisedPlace;
+        for (const auto &u : *updatedStates)
+          if (!u.second.gpsPoints.empty() && u.second.timestamp > lastGpsStateTime) lastGpsStateTime = u.second.timestamp;
+        msg.last_rtk_factor_stamp = rclcpp::Time(lastGpsStateTime.sec, lastGpsStateTime.nsec);
+        estimatorStatePublisher->publish(msg);
       });
 
   // Bring the (lifecycle) IMU node up before subscribing — the launch-side

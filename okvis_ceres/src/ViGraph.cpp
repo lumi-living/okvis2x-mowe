@@ -833,12 +833,17 @@ bool ViGraph::removeRelativePoseConstraint(StateId poseId0, StateId poseId1)
 }
 
 void ViGraph::freezeGpsExtrinsics(){
+    if(states_.empty()) return; // mow-e: no state yet -> no T_GW block (T-0115)
     problem_->SetParameterBlockConstant(states_.begin()->second.T_GW->parameters());
     gpsFixed_ = true;
     LOG(INFO) << "[GPS] Freezing GPS Extrinsics!";
 }
 
 void ViGraph::unfreezeGpsExtrinsics(){
+    // mow-e (T-0115): doFinalBa() calls this whenever gps_parameters is
+    // configured; with no state ever added, states_.begin() is end() and
+    // Ceres aborts on a garbage parameter block.
+    if(states_.empty()) return;
     problem_->SetParameterBlockVariable(states_.begin()->second.T_GW->parameters());
     gpsFixed_ = false;
     LOG(INFO) << "[GPS] Unfreezing GPS Extrinsics!";

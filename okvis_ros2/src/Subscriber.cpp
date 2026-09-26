@@ -79,8 +79,8 @@ void Subscriber::setNodeHandle(std::shared_ptr<rclcpp::Node> node,
   // overloads only accept a member-function POINTER, not a std::bind/Callback,
   // so a QoS + bound callback won't compile through the member API. The free
   // function takes a Callback AND a custom QoS.
-  // MOWE-PORT-REVIEW: re-applied by hand over OKVIS2-X's extra isColour bind
-  // argument; not compiled in the porting environment (no ROS 2 headers).
+  // Re-applied over OKVIS2-X's extra isColour bind argument (cross-built in
+  // T-0115).
   for (size_t i = 0; i < parameters_.nCameraSystem.numCameras(); ++i) {
     imageSubscribers_[i] = image_transport::create_subscription(
         node_.get(),

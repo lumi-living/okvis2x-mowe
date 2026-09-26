@@ -10,9 +10,12 @@
          camera lifecycle-activation trap, and the stereo pair can never
          split or half-drop (the failure modes of okvis2x_mowe_ov9281).
 
-         Only the IMU rides ROS: the sch16t LifecycleNode is included here and
-         okvis2x_node_mowe drives its configure->activate transitions itself
-         at startup (the launch-side auto-activate helpers are unreliable).
+         Only the IMU rides ROS: /imu/data_raw from the sch16t LifecycleNode.
+         By default the IMU node is NOT started here (imu:=false) — the bench
+         runner starts it separately (`ros2 run sch16t_imu_node …`, T-0115)
+         and two SPI readers would clash. Pass imu:=true for a one-shot
+         bring-up; either way okvis2x_node_mowe drives the node through
+         configure->activate itself (already-active is tolerated).
 
          VI(+GNSS) only: no supereight2 submapping, so no se_config_filename.
          Requires a build with -DUSE_MOWE_XFEAT=ON (the node links
@@ -22,8 +25,10 @@
          config_filename:=$(find-pkg-share okvis)/config/mowe/okvis2.yaml.
          ===================================================================== -->
 
-    <arg name="config_filename"
+    <arg name="config"
          default="$(find-pkg-share okvis)/config/mowe/okvis2-xfeat.yaml"/>
+    <!-- alias kept for the okvis2x_node_* launch convention -->
+    <arg name="config_filename" default="$(var config)"/>
     <arg name="imu_config"
          default="$(find-pkg-share sch16t_imu_node)/config/sch16t_default.yaml"/>
     <arg name="camera_device" default="/dev/video1"/>
@@ -32,8 +37,11 @@
          2 -> 25 Hz: still plenty for VIO, halves the realtime frame drops. -->
     <arg name="camera_decimation" default="2"/>
     <arg name="csv_path"      default="/tmp/"/>
-    <arg name="rviz"          default="true"/>
-    <arg name="imu"           default="true"/>  <!-- false: feed IMU from a rosbag -->
+    <!-- JSON with frames captured/ingested, IMU count, engine flag, RSS
+         start/peak/end, wall time — written on shutdown (T-0115). "" = off. -->
+    <arg name="stats_path"    default=""/>
+    <arg name="rviz"          default="false"/> <!-- headless bench -->
+    <arg name="imu"           default="false"/> <!-- true: start sch16t here -->
 
     <!-- as in the upstream OKVIS2-X launch files -->
     <set_env name="OMP_NUM_THREADS" value="2"/>
@@ -54,6 +62,7 @@
         <param name="camera_decimation" value="$(var camera_decimation)"/>
         <param name="activate_lifecycle_node" value="/sch16t_imu_node"/>
         <param name="csv_path" value="$(var csv_path)"/>
+        <param name="stats_path" value="$(var stats_path)"/>
         <remap from="/okvis/imu0" to="/imu/data_raw"/>
     </node>
 

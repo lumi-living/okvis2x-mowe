@@ -668,12 +668,31 @@ if(BUILD_ROS2)
     # image path); IMU in over ROS, pose out via okvis::Publisher. VI(+GNSS)
     # only, so no supereight2 config. Needs the mowe_camera_core package —
     # gated on USE_MOWE_XFEAT, which implies it.
+    #
+    # ONE OpenCV in the process (mowe-nav-kb 04, T-0115): okvis::Ros2 drags in
+    # cv_bridge (Subscriber.cpp) and with it Ubuntu's OpenCV 4.5.4 next to
+    # okvis's 4.8. The node only needs Publisher, so it links a cv_bridge-free
+    # build of it instead of okvis::Ros2 (image_transport itself is OpenCV-free).
+    add_library(okvis_ros2_pub STATIC okvis_ros2/src/Publisher.cpp)
+    target_include_directories(okvis_ros2_pub
+      PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/okvis_ros2/include
+      PRIVATE ${GLOG_INCLUDE_DIRS})
+    target_link_libraries(okvis_ros2_pub
+      ${OpenCV_LIBS} Ceres::ceres Eigen3::Eigen SRL::Supereight2
+      okvis::Common okvis::Util okvis::Timing okvis::Mapping
+      okvis::MultisensorProcessing ${GLOG_LIBRARIES} ${Boost_LIBRARIES} ${PCL_LIBRARIES})
+    target_compile_features(okvis_ros2_pub PUBLIC cxx_std_${OKVIS_CXX_STANDARD})
+    target_compile_options(okvis_ros2_pub PUBLIC ${OKVIS_PUBLIC_CXX_FLAGS} PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+    ament_target_dependencies(okvis_ros2_pub
+      PCL rclcpp Eigen3 sensor_msgs visualization_msgs std_srvs nav_msgs
+      pcl_conversions message_filters image_transport tf2 tf2_ros tf2_eigen tf2_geometry_msgs)
+
     find_package(lifecycle_msgs REQUIRED)
     find_package(mowe_camera_core CONFIG REQUIRED)
     add_executable(okvis2x_node_mowe okvis_ros2/src/okvis2x_node_mowe.cpp)
     target_link_libraries(
       okvis2x_node_mowe
-      okvis::Ros2
+      okvis_ros2_pub
       mowe_camera::core
       ${OpenCV_LIBS}
       ${SUITESPARSE_LIBRARIES}

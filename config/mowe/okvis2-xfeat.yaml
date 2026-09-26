@@ -16,7 +16,8 @@
 # =============================================================================
 # Same rig as config/mowe/okvis2.yaml (OV9281 stereo + SCH16T), but the frontend is
 # XFeat-on-TensorRT instead of BRISK (frontend_parameters.xfeat below):
-#   * detection/description = XFeat engine (static 1280x800 mono, top-2048)
+#   * detection/description = XFeat engine (batch-2 640x384 FP16, top-1024;
+#     frames are resized on the GPU, keypoints scaled back to 1280x800)
 #   * descriptor matching   = cosine distance on 64-D float descriptors —
 #     matching_threshold is a COSINE DISTANCE (1 - cos similarity), not Hamming
 #   * stereo / motion-stereo pair matching = LighterGlue engine (when built,
@@ -24,7 +25,7 @@
 #   * loop closures OFF — the DBoW vocabulary is BRISK-trained and unusable
 #     with XFeat (DINOv2/FAISS is the planned replacement, ADR-0040 issue #5)
 # Requires: okvis built with USE_MOWE_XFEAT=ON + USE_TENSORRT=ON and the .plan
-# engines on device (see /opt/mowe/onnx). BRISK A/B baseline: okvis2.yaml.
+# engines on device (/home/mowe/agent/engines). BRISK A/B baseline: okvis2.yaml.
 #
 # ⚠️ CALIBRATION STATUS — three numbers must be filled before pose is metric:
 #   1. Camera INTRINSICS (focal_length, principal_point, distortion) — REQUIRED.
@@ -150,8 +151,11 @@ frontend_parameters:
     num_matching_threads: 3
     xfeat:
         use: true
-        engine: /opt/mowe/onnx/xfeat.plan               # static (1,1,800,1280) top-2048
-        lighterglue_engine: /opt/mowe/onnx/lighterglue.plan # "" -> cosine NN fallback
+        # Engines built on the device by tools/trt/build_engines.sh (T-0110);
+        # 640x384 is the VIO front-end resolution (KB), the frontend resizes
+        # the 1280x800 frames on the GPU and scales keypoints back (T-0111).
+        engine: /home/mowe/agent/engines/xfeat_640x384_k1024_trt10.3.0_sm87_fp16.plan
+        lighterglue_engine: /home/mowe/agent/engines/lighterglue_k512_trt10.3.0_sm87_fp16.plan
         score_threshold: 0.05    # keypointness x reliability floor (upstream default)
         keypoint_size: 16.0      # [px] nominal size; obs sigma = size/f*0.125 in matching
         match_score_min: 0.10    # LighterGlue mutual-NN score floor (stage B)

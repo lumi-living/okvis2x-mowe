@@ -27,6 +27,7 @@
  *    (if configured) and the final trajectory CSV in `csv_path`.
  *  - GNSS / wheel odometry are NOT wired yet: see docs/MOWE_TODO.md.
  */
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -58,6 +59,86 @@
 #include "mowe_camera/frame.hpp"
 
 static std::atomic_bool shtdown; ///< Shutdown requested?
+
+/// \brief Bench/bring-up counters written to `stats_path` as JSON on shutdown
+///        (T-0115; ADR-0042 issue 3 memory budget). Atomics: the capture
+///        thread, the IMU callback and the main loop all touch them.
+struct RunStats {
+  std::atomic<uint64_t> framesCaptured{0};  ///< FrameBundles from the driver
+  std::atomic<uint64_t> framesDecimated{0}; ///< skipped by camera_decimation
+  std::atomic<uint64_t> framesIngested{0};  ///< addImages() accepted
+  std::atomic<uint64_t> framesDropped{0};   ///< addImages() queue-full drop
+  std::atomic<uint64_t> framesUnpaired{0};  ///< bundle without both eyes
+  std::atomic<uint64_t> imuIngested{0};     ///< addImuMeasurement() accepted
+  std::atomic<uint64_t> odomPublished{0};   ///< realtimePredictAndPublish() true
+  std::atomic<int> crashes{0};              ///< fatal signals / uncaught exceptions
+  std::atomic<int> engineLoaded{0};
+  std::atomic<int> cleanExit{0};
+  double rssStartMb = 0, rssPeakMb = 0, rssEndMb = 0;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  std::string path; ///< empty: disabled
+};
+static RunStats g_stats;
+
+/// \brief Current resident set size from /proc/self/status [MB].
+static double rssMb() {
+  std::ifstream f("/proc/self/status");
+  std::string key;
+  long kb = 0;
+  while (f >> key) {
+    if (key == "VmRSS:") { f >> kb; break; }
+    f.ignore(1024, '\n');
+  }
+  return double(kb) / 1024.0;
+}
+
+/// \brief Sample RSS into start/peak/end. Call periodically from the main loop.
+static void sampleRss() {
+  const double mb = rssMb();
+  if (g_stats.rssStartMb == 0) g_stats.rssStartMb = mb;
+  g_stats.rssPeakMb = std::max(g_stats.rssPeakMb, mb);
+  g_stats.rssEndMb = mb;
+}
+
+/// \brief Write the stats JSON (idempotent; also called from the fatal-signal
+///        handler, so keep it to plain stream output).
+static void writeStats() {
+  if (g_stats.path.empty()) return;
+  sampleRss();
+  const double wallS = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - g_stats.t0).count();
+  const uint64_t offered = g_stats.framesCaptured - g_stats.framesDecimated;
+  std::ofstream f(g_stats.path);
+  f << "{\n"
+    << "  \"frames_captured\": " << g_stats.framesCaptured << ",\n"
+    << "  \"frames_decimated\": " << g_stats.framesDecimated << ",\n"
+    << "  \"frames_offered\": " << offered << ",\n"
+    << "  \"frames_ingested\": " << g_stats.framesIngested << ",\n"
+    << "  \"frames_dropped\": " << g_stats.framesDropped << ",\n"
+    << "  \"frames_unpaired\": " << g_stats.framesUnpaired << ",\n"
+    << "  \"frames_ingested_ratio\": "
+    << (offered ? double(g_stats.framesIngested) / double(offered) : 0.0) << ",\n"
+    << "  \"imu_ingested\": " << g_stats.imuIngested << ",\n"
+    << "  \"odom_published\": " << g_stats.odomPublished << ",\n"
+    << "  \"engine_loaded\": " << g_stats.engineLoaded << ",\n"
+    << "  \"crashes\": " << g_stats.crashes << ",\n"
+    << "  \"clean_exit\": " << g_stats.cleanExit << ",\n"
+    << "  \"rss_start_mb\": " << g_stats.rssStartMb << ",\n"
+    << "  \"rss_peak_mb\": " << g_stats.rssPeakMb << ",\n"
+    << "  \"rss_end_mb\": " << g_stats.rssEndMb << ",\n"
+    << "  \"rss_growth_mb_per_min\": "
+    << (wallS > 1.0 ? (g_stats.rssEndMb - g_stats.rssStartMb) / (wallS / 60.0) : 0.0) << ",\n"
+    << "  \"wall_s\": " << wallS << "\n"
+    << "}\n";
+}
+
+/// \brief Last-ditch: record the crash in the stats file, then die normally.
+static void onFatalSignal(int sig) {
+  g_stats.crashes = 1;
+  writeStats();
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
 
 /// \brief Drive a LifecycleNode through configure -> activate via its
 ///        change_state service. Best-effort: logs and carries on when a
@@ -109,6 +190,8 @@ int main(int argc, char **argv) {
   node->declare_parameter("camera_decimation", 1);
   node->declare_parameter("activate_lifecycle_node", "/sch16t_imu_node");
   node->declare_parameter("csv_path", "/tmp/");
+  // T-0115: bring-up counters + RSS written here as JSON on shutdown ("" = off).
+  node->declare_parameter("stats_path", "");
 
   std::string configFilename;
   node->get_parameter("config_filename", configFilename);
@@ -121,6 +204,10 @@ int main(int argc, char **argv) {
                       imu_propagated_state_publishing_rate);
   std::string csvPath = "/tmp/";
   node->get_parameter("csv_path", csvPath);
+  node->get_parameter("stats_path", g_stats.path);
+  if (!g_stats.path.empty()) {
+    for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE}) signal(sig, onFatalSignal);
+  }
 
   okvis::ViParametersReader viParametersReader(configFilename);
   okvis::ViParameters parameters;
@@ -139,11 +226,8 @@ int main(int argc, char **argv) {
   }
 
   // Publisher (pose, path, match visualisations). OKVIS2-X publishes from
-  // three worker threads.
-  // MOWE-PORT-REVIEW: Publisher / ThreadedPublisher wiring, the graph-callback
-  // lambda, the shutdown service and the stopThreading + CSV tail were
-  // hand-adapted from okvis2x_node.cpp; not compiled in the porting
-  // environment (no ROS 2 or mowe_camera_core headers).
+  // three worker threads (wiring as in okvis2x_node.cpp; cross-built and run
+  // on the bench in T-0115).
   auto threadedOdometryPublisher =
       std::make_shared<okvis::ThreadedPublisher>(node);
   auto threadedImagePublisher = std::make_shared<okvis::ThreadedPublisher>(node);
@@ -170,6 +254,10 @@ int main(int argc, char **argv) {
   // Default se::SubMapConfig: unused with enable_submapping == false.
   okvis::ThreadedSlam estimator(parameters, dBowVocDir);
   estimator.setBlocking(false);
+  // Frontend ctor asserts on a failed engine load, so reaching here with
+  // xfeat.use means the TensorRT engine is up.
+  g_stats.engineLoaded = estimator.frontend().usingXFeat() ? 1 : 0;
+  sampleRss();
 
   publisher.setBodyTransform(parameters.imu.T_BS);
   publisher.setOdometryPublishingRate(imu_propagated_state_publishing_rate);
@@ -205,8 +293,8 @@ int main(int argc, char **argv) {
         const Eigen::Vector3d gyr(msg.angular_velocity.x,
                                   msg.angular_velocity.y,
                                   msg.angular_velocity.z);
-        estimator.addImuMeasurement(timestamp, acc, gyr);
-        publisher.realtimePredictAndPublish(timestamp, acc, gyr);
+        if (estimator.addImuMeasurement(timestamp, acc, gyr)) ++g_stats.imuIngested;
+        if (publisher.realtimePredictAndPublish(timestamp, acc, gyr)) ++g_stats.odomPublished;
       });
 
   // TODO(mow-e, docs/MOWE_TODO.md): GNSS (NavSatFix -> addGpsMeasurement) and
@@ -280,11 +368,13 @@ int main(int argc, char **argv) {
           }
           continue;
         }
+        ++g_stats.framesCaptured;
         // Sensor-rate decimation: the OV9281 mode runs at 50 fps, more than
         // the Orin Nano VIO pipeline sustains — skip early instead of paying
         // clone+queue for frames ThreadedSlam would drop anyway (sequence-
         // based, so the kept cadence is stable).
         if (decimation > 1 && (bundle.sequence() % decimation) != 0) {
+          ++g_stats.framesDecimated;
           continue;
         }
         const auto planes = bundle.planes();
@@ -292,45 +382,76 @@ int main(int argc, char **argv) {
         for (const auto &plane : planes) {
           if (!plane.data)
             continue;
-          const size_t camIdx = (plane.stream_id == "right") ? 1 : 0;
+          // mowe_camera's side-by-side splitter labels the eyes "cam0"/"cam1"
+          // (sbs.hpp); "left"/"right" kept for other drivers.
+          const size_t camIdx =
+              (plane.stream_id == "cam1" || plane.stream_id == "right") ? 1 : 0;
           images[camIdx] = cv::Mat(int(plane.height), int(plane.width), CV_8UC1,
                                    const_cast<std::uint8_t *>(plane.data),
                                    plane.stride_bytes)
                                .clone();
         }
         if (images.size() != 2) {
+          if (++g_stats.framesUnpaired % 100 == 1) {
+            std::string ids;
+            for (const auto &plane : planes) ids += plane.stream_id + " ";
+            LOG(WARNING) << "incomplete stereo pair, planes: " << ids
+                         << "(" << g_stats.framesUnpaired << " so far)";
+          }
           continue; // need the full synchronized pair
         }
         okvis::Time t;
         t.fromNSec(std::uint64_t(bundle.timestamp().count()));
-        estimator.addImages(t, images);
+        // false = ThreadedSlam's 2-deep input queue was full (estimator slower
+        // than the decimated camera rate) and the oldest frame was dropped.
+        if (estimator.addImages(t, images)) ++g_stats.framesIngested;
+        else ++g_stats.framesDropped;
       }
       camera->stop();
     });
 
-    // Main loop (same shape as okvis2x_node).
+    // Main loop (same shape as okvis2x_node) + 1 Hz RSS sampling.
+    auto nextRss = std::chrono::steady_clock::now();
     while (!shtdown) {
       rclcpp::spin_some(node);
       estimator.processFrame();
       std::map<std::string, cv::Mat> images;
       estimator.display(images);
       publisher.publishImages(images);
+      if (std::chrono::steady_clock::now() >= nextRss) {
+        sampleRss();
+        nextRss += std::chrono::seconds(1);
+      }
     }
     captureThread.join();
     imuSubscription.reset();
+    // Write once now (clean_exit 0) so the numbers survive a hung final BA,
+    // and again after the CSV tail with clean_exit 1.
+    writeStats();
 
-    if (parameters.estimator.do_final_ba) {
+    // No state was ever added (e.g. no keypoints — dark frames): final BA has
+    // nothing to optimise and writeFinalCsvTrajectory throws map::at. Skip.
+    const bool haveStates = estimator.frontend().isInitialized();
+    if (parameters.estimator.do_final_ba && haveStates) {
       LOG(INFO) << "Final full BA...";
       estimator.doFinalBa();
     }
 
     // Finish up (as okvis2x_node, minus the submapping interface).
     estimator.stopThreading();
-    estimator.setFinalTrajectoryCsvFile(csvPath + "/okvis2-final_trajectory.csv",
-                                        false);
-    estimator.writeFinalTrajectoryCsv();
+    if (haveStates) {
+      estimator.setFinalTrajectoryCsvFile(
+          csvPath + "/okvis2-final_trajectory.csv", false);
+      estimator.writeFinalTrajectoryCsv();
+    } else {
+      LOG(WARNING) << "estimator never initialised — no trajectory CSV written";
+    }
+    g_stats.cleanExit = 1;
+    writeStats();
   } catch (const std::exception &e) {
     LOG(ERROR) << e.what();
+    g_stats.crashes = 1;
+    writeStats();
     return EXIT_FAILURE;
   }
 

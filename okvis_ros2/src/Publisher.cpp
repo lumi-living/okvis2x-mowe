@@ -17,6 +17,8 @@
  * @author Andreas Forster
  */
 
+#include <cstring>
+
 #include <glog/logging.h>
 #include <okvis/ros2/Publisher.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -427,8 +429,22 @@ void Publisher::setMeshesPath(std::string meshesDir){
 
 bool Publisher::publishImages(const std::map<std::string, cv::Mat>& images) const {
   for(const auto & image : images) {
-    sensor_msgs::msg::Image::SharedPtr msg
-      = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", image.second).toImageMsg();
+    // Hand-filled instead of cv_bridge::CvImage::toImageMsg() (one OpenCV per
+    // process, see Publisher.hpp). Display images are 8UC3 (bgr8) or 8UC1.
+    const cv::Mat& im = image.second;
+    auto msg = std::make_shared<sensor_msgs::msg::Image>();
+    msg->height = im.rows;
+    msg->width = im.cols;
+    msg->encoding = im.channels() == 1 ? "mono8" : "bgr8";
+    msg->is_bigendian = false;
+    msg->step = im.cols * im.elemSize();
+    msg->data.resize(msg->step * im.rows);
+    if (im.isContinuous()) {
+      std::memcpy(msg->data.data(), im.data, msg->data.size());
+    } else {
+      for (int r = 0; r < im.rows; ++r)
+        std::memcpy(msg->data.data() + r * msg->step, im.ptr(r), msg->step);
+    }
     const auto & pubIter = pubImages_.find(image.first);
     if(pubIter == pubImages_.end()) {
       continue;

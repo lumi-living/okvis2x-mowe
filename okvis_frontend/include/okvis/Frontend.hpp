@@ -170,7 +170,7 @@ class Frontend : public ViFrontendInterface {
   }
 
   /// @brief Returns true if the initialization has been completed (RANSAC with actual translation)
-  bool isInitialized() {
+  bool isInitialized() const {
     return isInitialized_;
   }
 

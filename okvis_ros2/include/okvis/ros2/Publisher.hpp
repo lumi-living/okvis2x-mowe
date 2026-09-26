@@ -22,11 +22,10 @@
 
 #include <memory>
 
-#if __has_include(<cv_bridge/cv_bridge.hpp>) // requires GCC >= 5
-#include <cv_bridge/cv_bridge.hpp>
-#else
-#include <cv_bridge/cv_bridge.h> // ros2 changed to .hpp some point...
-#endif
+// mow-e: no cv_bridge here. It links Ubuntu's OpenCV 4.5.4 while okvis is
+// built against 4.8, and a process with both is one ODR violation away from
+// a crash (mowe-nav-kb 04). publishImages fills sensor_msgs::Image itself.
+#include <sensor_msgs/msg/image.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <tf2_ros/transform_broadcaster.h>

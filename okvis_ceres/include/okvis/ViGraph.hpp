@@ -58,6 +58,7 @@
 #include <okvis/ceres/DepthError.hpp>
 #include <okvis/ceres/CeresIterationCallback.hpp>
 #include <okvis/ceres/GpsErrorAsynchronous.hpp>
+#include <okvis/ceres/WheelOdometryError.hpp> // mow-e (T-0125)
 #include <okvis/ceres/SubmapIcpError.hpp>
 
 #include <GeographicLib/Geocentric.hpp>
@@ -120,6 +121,10 @@ class ViGraph
    * @return index of GPS.
    */
   int addGps(const okvis::GpsParameters & gpsParameters);
+
+  /// \brief mow-e (T-0125, ADR-0042 design item 3): configure wheel odometry (one sensor).
+  /// \return 0.
+  int addWheel(const okvis::WheelParameters & wheelParameters);
 
   // add states
   /**
@@ -492,6 +497,36 @@ class ViGraph
   /// \return The error term, or nullptr if the state or the factor does not exist.
   std::shared_ptr<const ceres::GpsErrorAsynchronous> gpsErrorTerm(StateId id, size_t k) const;
 
+  /// \name mow-e (T-0125, ADR-0042 design item 3): wheel odometry factors
+  /// \{
+  /// \brief Counters for wheel_stats.json.
+  struct WheelFactorStats {
+    size_t added = 0;        ///< Factors created (after gating).
+    size_t gatedOmega = 0;   ///< Skipped: |omega_enc - omega_gyro| > slip_gate_omega.
+    size_t gatedV = 0;       ///< Added with inflated sigma_v: |v_enc - v_B,x| > slip_gate_v.
+    size_t slipFlagged = 0;  ///< Added with inflated sigmas because the publisher flagged slip.
+    size_t merged = 0;       ///< Re-anchored by eliminateStateByImuMerge.
+    size_t dropped = 0;      ///< Lost on elimination (only without IMU).
+    std::vector<uint64_t> gatedTimesNs; ///< Wheel stamps [ns] of gated measurements (either gate).
+  };
+  const WheelFactorStats& wheelFactorStats() const { return wheelFactorStats_; }
+  /// \brief Add one wheel measurement as a factor on state poseId (with slip gating).
+  /// \param imuMeasurements IMU covering [state time, wheel time]; also provides the gyro at tw.
+  /// \return True if a factor was added (false: gated by the yaw-rate gate or IMU not covering).
+  bool addWheelMeasurement(StateId poseId, const WheelMeasurement& wheelMeas,
+                           const ImuMeasurementDeque& imuMeasurements);
+  /// \brief Attach every measurement to the latest state at/before its time (mirrors addGpsMeasurements).
+  /// \param[out] sids If given, one StateId per measurement (StateId(0) where none could be attached).
+  bool addWheelMeasurements(const WheelMeasurementDeque& wheelMeasurementDeque,
+                            const ImuMeasurementDeque& imuMeasurementDeque, std::deque<StateId>* sids);
+  /// \brief Wheel factors attached to a state (0 if the state does not exist).
+  size_t numWheelFactors(StateId id, size_t* inProblem = nullptr) const;
+  /// \brief Wheel factors attached to any state.
+  size_t numWheelFactors() const;
+  /// \brief The k-th wheel error term of a state (nullptr if none).
+  std::shared_ptr<const ceres::WheelOdometryError> wheelErrorTerm(StateId id, size_t k) const;
+  /// \}
+
   /// \brief Check if GPS trafo is fixed
   /// \return True if GPS Trafo is fixed.
   bool isGpsFixed(){return gpsFixed_;}
@@ -801,6 +836,9 @@ protected:
   /// \brief GPS factpr pose graph edge.
   using GpsFactor = GraphEdge<ceres::GpsErrorAsynchronous>;
 
+  /// \brief mow-e (T-0125): wheel odometry unary edge (on T_WS + SpeedAndBias).
+  using WheelFactor = GraphEdge<ceres::WheelOdometryError>;
+
   /// \brief
   using SubmapAlignmentFactor = GraphEdge<ceres::SubmapIcpError>;
 
@@ -827,6 +865,7 @@ protected:
     std::map<StateId, TwoPoseConstLink> twoPoseConstLinks; ///< All pose graph edges (const).
     std::map<StateId, RelativePoseLink> relativePoseLinks; ///< All relative pose graph edges.
     std::vector<GpsFactor> GpsFactors; ///< All GPS factors
+    std::vector<WheelFactor> WheelFactors; ///< mow-e (T-0125): all wheel odometry factors
     // ToDo: how to store  submap alignment factors for two states
     std::vector<::ceres::ResidualBlockId> mapResIds;
     std::vector<SubmapAlignmentFactor> submapReferenceLinks;
@@ -881,6 +920,11 @@ protected:
   bool gpsReInitialised_ = false; /// < Flag if Re-Initialisation is successful and GPS LC can be triggered
   GpsFactorStats gpsFactorStats_; ///< mow-e (T-0117): GNSS factor bookkeeping.
   double gpsYawSigmaDegAtInit_ = std::numeric_limits<double>::quiet_NaN(); ///< mow-e (T-0117).
+
+  // mow-e (T-0125): wheel odometry
+  std::optional<okvis::WheelParameters> wheelParameters_; ///< Set by addWheel().
+  WheelFactorStats wheelFactorStats_; ///< Wheel factor bookkeeping.
+  std::shared_ptr< ::ceres::LossFunction> wheelLossFunctionPtr_; ///< Cauchy or Huber per wheel_parameters.loss.
 
 
   /// \brief Store 4D local parametrisation (position, yaw) for GPS extrinsics locally

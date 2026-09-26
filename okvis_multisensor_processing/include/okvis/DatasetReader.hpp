@@ -50,8 +50,11 @@ public:
   /// @param numCameras The total number of cameras.
   /// @param syncCameras Camera group to force synchronisation.
   /// @param deltaT Duration [s] to skip in the beginning.
+  /// @param gpsParameters If set, mav0/gps0/ is streamed to the GPS callback.
+  /// @param wheelParameters mow-e (T-0125): if set, mav0/wheel0/data.csv is streamed to the wheel callback.
   DatasetReader(const std::string& path, size_t numCameras, const std::set<size_t> & syncCameras,
-                const Duration & deltaT = Duration(0.0), const std::optional<GpsParameters>& gpsParameters = std::nullopt);
+                const Duration & deltaT = Duration(0.0), const std::optional<GpsParameters>& gpsParameters = std::nullopt,
+                const std::optional<WheelParameters>& wheelParameters = std::nullopt);
 
   /// @brief Destructor: stops streaming.
   virtual ~DatasetReader();
@@ -115,6 +118,11 @@ private:
   std::string gpsDataType_; ///< GPS data type: "cartesian" | "geodetic" | "geodetic-leica"
   okvis::Time t_gps_; ///< Timestamp of the last gps signal received
   std::ifstream gpsFile_; ///< Gps csv file.
+
+  // mow-e (T-0125): wheel odometry (mav0/wheel0/data.csv: ns, v_left, v_right, b_eff, slip_flag)
+  bool wheelFlag_ = false; ///< Stream wheel data?
+  okvis::Time t_wheel_; ///< Timestamp of the last wheel measurement streamed.
+  std::ifstream wheelFile_; ///< Wheel csv file.
 
 };
 

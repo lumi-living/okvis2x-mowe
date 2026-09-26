@@ -53,6 +53,10 @@ public:
                const double &, const double &, const double &,
                const double &, const double &)> GeodeticGpsCallback;
   
+  /// \brief mow-e (T-0125): wheel odometry callback (stamp, v_left, v_right, b_eff, slip_flag).
+  typedef std::function<
+          bool(const okvis::Time &, double, double, double, int)> WheelCallback;
+
   /// \brief Callback for receiving depth measurements.
   typedef std::function<
           bool(std::map<size_t, std::vector<okvis::CameraMeasurement>>&)> DepthImageCallback;
@@ -84,6 +88,11 @@ public:
     geodeticGpsCallback_ = geodeticGpsCallback;
   }
 
+  /// @brief mow-e (T-0125): set the wheel odometry callback.
+  virtual void setWheelCallback(const WheelCallback& wheelCallback) final {
+    wheelCallback_ = wheelCallback;
+  }
+
   /// @brief Set the images callback
   /// @param imagesCallback The images callback to register.
   virtual void setDepthImageCallback(const DepthImageCallback & depthImageCallback) final {
@@ -109,6 +118,7 @@ protected:
   AlignedVector<ImuCallback> imuCallbacks_; ///< The registered IMU callbacks.
   GpsCallback gpsCallback_; ///< The registered GPS callback. // ToDo: rename to cartesian
   GeodeticGpsCallback geodeticGpsCallback_; ///< The registered (geodetic) GPS callback.
+  WheelCallback wheelCallback_; ///< mow-e (T-0125): the registered wheel odometry callback.
   DepthImageCallback depthCallback_;  ///< The registered callback for the depth image.
 };
 

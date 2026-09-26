@@ -28,6 +28,8 @@ struct Fixture {
 
   Fixture() {
     imuParameters.a0.setZero();
+    imuParameters.g0.setZero();  // mow-e (T-0125): no default in ImuParameters -- was stack garbage,
+    imuParameters.s_a.setOnes(); // which put a random gyro bias into the initial state (J1 check flaked)
     imuParameters.g = 9.81;
     imuParameters.a_max = 1000.0;
     imuParameters.g_max = 1000.0;
@@ -190,7 +192,7 @@ TEST(okvisTestSuite, GpsMergeKeepsFactorOnPreviousState) {
     d[i] = -dx; sb.plus(parameters[1], d.data(), parameters[1]); newTerm->Evaluate(parameters, rm.data(), nullptr); sb.setEstimate(sb0);
     J1n.col(i) = (rp - rm) / (2.0 * dx);
   }
-  EXPECT_LT((J1n - J1).norm() / J1.norm(), 1e-4) << (J1n - J1).norm();
+  EXPECT_LT((J1n - J1).norm() / J1.norm(), 1e-4) << (J1n - J1).norm() << "\nJ1\n" << J1 << "\nnum\n" << J1n;
 }
 
 TEST(okvisTestSuite, GpsMergeKeepsBufferedInitFactor) {

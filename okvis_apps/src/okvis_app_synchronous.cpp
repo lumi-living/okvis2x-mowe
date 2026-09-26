@@ -121,7 +121,8 @@ int main(int argc, char **argv)
   } else {
     datasetReader.reset(new okvis::DatasetReader(
                           path, int(parameters.nCameraSystem.numCameras()),
-                          parameters.camera.sync_cameras, deltaT, parameters.gps));
+                          parameters.camera.sync_cameras, deltaT, parameters.gps,
+                          parameters.wheel)); // mow-e (T-0125): mav0/wheel0/data.csv
   }
 
   // also check DBoW2 vocabulary
@@ -238,6 +239,12 @@ int main(int argc, char **argv)
       return EXIT_FAILURE;
     }
   }
+  if(parameters.wheel) { // mow-e (T-0125, ADR-0042 design item 3)
+    datasetReader->setWheelCallback(
+            std::bind(&okvis::ThreadedSlam::addWheelMeasurement, &estimator,
+                      std::placeholders::_1, std::placeholders::_2, std::placeholders::_3,
+                      std::placeholders::_4, std::placeholders::_5));
+  }
 
   // start
   okvis::Time startTime = okvis::Time::now();
@@ -273,6 +280,9 @@ int main(int argc, char **argv)
         // and the GNSS bookkeeping next to the trajectories.
         estimator.writeGlobalTrajectoryCsv(savePath+"/okvis2-" + mode + "-global_trajectory.csv", false);
         estimator.writeGnssStatsJson(savePath+"/gnss_stats.json");
+      }
+      if(parameters.wheel){ // mow-e (T-0125)
+        estimator.writeWheelStatsJson(savePath+"/wheel_stats.json");
       }
       estimator.setFinalTrajectoryCsvFile(savePath+"/okvis2-" + mode + "-final-ba_trajectory.csv", isWriteRpg);
       if(parameters.estimator.do_final_ba) {

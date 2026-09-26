@@ -30,9 +30,12 @@ namespace okvis {
 
 DatasetReader::DatasetReader(
   const std::string& path, size_t numCameras, const std::set<size_t> &syncCameras,
-  const Duration & deltaT, const std::optional<GpsParameters>& gpsParameters) :
+  const Duration & deltaT, const std::optional<GpsParameters>& gpsParameters,
+  const std::optional<WheelParameters>& wheelParameters) :
   numCameras_(numCameras), syncCameras_(syncCameras), deltaT_(deltaT) {
- 
+
+  wheelFlag_ = bool(wheelParameters); // mow-e (T-0125)
+  t_wheel_ = okvis::Time(0.0);
   if(gpsParameters) {
     gpsFlag_ = true;
     gpsDataType_ = (*gpsParameters).type;
@@ -84,6 +87,8 @@ bool DatasetReader::startStreaming() {
   OKVIS_ASSERT_TRUE(Exception, !imuCallbacks_.empty(), "no add IMU callback registered")
   if(gpsFlag_)
           OKVIS_ASSERT_TRUE(Exception, geodeticGpsCallback_ || gpsCallback_, "no add GPS callback registered")
+  if(wheelFlag_) // mow-e (T-0125)
+          OKVIS_ASSERT_TRUE(Exception, wheelCallback_, "no add wheel callback registered")
 
   // open the IMU file
   std::string line;
@@ -126,6 +131,20 @@ bool DatasetReader::startStreaming() {
       gpsFile_.seekg(0, std::ios::beg);
       std::getline(gpsFile_, gline);
 
+  }
+
+  if(wheelFlag_) { // mow-e (T-0125): mav0/wheel0/data.csv, header line first
+      std::string wline;
+      wheelFile_.open(path_ + "/wheel0/data.csv");
+      OKVIS_ASSERT_TRUE(Exception, wheelFile_.good(), "no wheel file found at " << path_+"/wheel0/data.csv");
+      int wnumber_of_lines = 0;
+      while (std::getline(wheelFile_, wline))
+        ++wnumber_of_lines;
+      LOG(INFO)<< "No. wheel measurements: " << wnumber_of_lines-1;
+      OKVIS_ASSERT_TRUE(Exception, wnumber_of_lines - 1 > 0, "no wheel measurements present in " << path_+"/wheel0/data.csv");
+      wheelFile_.clear();
+      wheelFile_.seekg(0, std::ios::beg);
+      std::getline(wheelFile_, wline);
   }
 
   // now open camera files
@@ -589,6 +608,31 @@ void  DatasetReader::processing() {
             }
 
           } /*while (t_gps <= t);*/
+      }
+
+      if(wheelFlag_){ // mow-e (T-0125): stream wheel rows up to this frame's time
+          std::string wline;
+          while(t_wheel_ <= t) {
+            if (!std::getline(wheelFile_, wline)) {
+              wheelFlag_ = false; // file exhausted before the images: keep streaming the rest
+              break;
+            }
+            std::stringstream wstream(wline);
+            std::string ws;
+            std::getline(wstream, ws, ',');
+            const uint64_t wnanoseconds = std::stoull(ws.c_str());
+            double v[3] = {0.0, 0.0, 0.0};
+            for (int j = 0; j < 3; ++j) {
+              std::getline(wstream, ws, ',');
+              v[j] = std::stod(ws);
+            }
+            int slipFlag = 0;
+            if (std::getline(wstream, ws, ',')) slipFlag = std::atoi(ws.c_str());
+            t_wheel_.fromNSec(wnanoseconds);
+            if (t_wheel_ - start + okvis::Duration(1.0) > deltaT_) {
+              wheelCallback_(t_wheel_, v[0], v[1], v[2], slipFlag);
+            }
+          }
       }
 
     // finally we are ready to call the callback

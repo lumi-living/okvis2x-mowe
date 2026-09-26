@@ -264,6 +264,25 @@ struct GpsSensorReadings {
 typedef Measurement<GpsSensorReadings> GpsMeasurement;
 typedef std::deque<GpsMeasurement, Eigen::aligned_allocator<GpsMeasurement> > GpsMeasurementDeque;
 
+/// \brief mow-e (T-0125, ADR-0042 design item 3): wheel-encoder odometry, the
+/// mowe_msgs/WheelSpeeds contract (shared/contracts/wheel_odometry.md v1): track ground
+/// speeds [m/s], the publisher's effective track width [m] and its slip flag.
+struct WheelSensorReadings {
+  WheelSensorReadings() = default;
+  WheelSensorReadings(double vLeft, double vRight, double bEff, int slipFlag = 0)
+      : v_left(vLeft), v_right(vRight), b_eff(bEff), slip_flag(slipFlag) {}
+  double v_left = 0.0;   ///< Left track ground speed [m/s], forward positive.
+  double v_right = 0.0;  ///< Right track ground speed [m/s].
+  double b_eff = 0.0;    ///< Effective track width the publisher used [m] (0 = unknown).
+  int slip_flag = 0;     ///< 0 none, 1 suspected, 2 known.
+  /// \brief Forward speed [m/s].
+  double speed() const { return 0.5 * (v_left + v_right); }
+  /// \brief Yaw rate [rad/s] for the given effective track width (left turn positive).
+  double yawRate(double bEff) const { return (v_right - v_left) / bEff; }
+};
+typedef Measurement<WheelSensorReadings> WheelMeasurement;
+typedef std::deque<WheelMeasurement, Eigen::aligned_allocator<WheelMeasurement> > WheelMeasurementDeque;
+
 }  // namespace okvis
 
 #endif // INCLUDE_OKVIS_MEASUREMENTS_HPP_

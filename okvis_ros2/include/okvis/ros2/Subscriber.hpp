@@ -36,6 +36,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <mowe_msgs/msg/gnss_enu.hpp>              // mow-e (T-0117)
 #include <mowe_msgs/msg/gnss_alignment_status.hpp> // mow-e (T-0117)
+#include <mowe_msgs/msg/wheel_speeds.hpp>          // mow-e (T-0125)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 #include <opencv2/opencv.hpp>
@@ -114,6 +115,9 @@ class Subscriber
   void gnssCallback(const mowe_msgs::msg::GnssEnu& msg);
   /// @brief mow-e (T-0117): 1 Hz publisher of the estimator's GNSS alignment state.
   void publishGnssAlignmentStatus();
+  /// @brief mow-e (T-0125, ADR-0042 design item 3): /wheel/speeds (mowe_msgs/WheelSpeeds,
+  /// shared/contracts/wheel_odometry.md v1) -> ViInterface::addWheelMeasurement.
+  void wheelCallback(const mowe_msgs::msg::WheelSpeeds& msg);
 
   /// @brief function that performs the synchronization of the different ir and depth images for the slam system
   void synchronizeData();
@@ -132,6 +136,9 @@ class Subscriber
   rclcpp::TimerBase::SharedPtr gnssStatusTimer_; ///< mow-e (T-0117).
   uint64_t gnssReceived_ = 0; ///< mow-e (T-0117): fixes received on /gnss/enu.
   uint64_t gnssAccepted_ = 0; ///< mow-e (T-0117): fixes accepted by the estimator.
+  rclcpp::Subscription<mowe_msgs::msg::WheelSpeeds>::SharedPtr subWheel_; ///< mow-e (T-0125): /wheel/speeds.
+  uint64_t wheelReceived_ = 0; ///< mow-e (T-0125).
+  uint64_t wheelAccepted_ = 0; ///< mow-e (T-0125).
   std::mutex time_mutex_; ///< Lock when accessing time
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gtPoses_;

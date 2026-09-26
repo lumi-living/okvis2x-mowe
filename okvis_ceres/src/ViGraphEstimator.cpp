@@ -140,6 +140,33 @@ bool ViGraphEstimator::eliminateStateByImuMerge(StateId stateId, StateId refId)
     }
   }
 
+  // mow-e (T-0125, ADR-0042 design item 3): wheel factors merge into the previous state the
+  // same way -- a new WheelOdometryError anchored at t_previous, preintegrated over the
+  // just-extended IMU link to the same wheel time, same measurement and sigmas.
+  if(!state.WheelFactors.empty()) {
+    const bool canMerge = imuParametersVec_.at(0).use;
+    for(const auto& wheelFactor : state.WheelFactors) {
+      if(wheelFactor.residualBlockId) {
+        problem_->RemoveResidualBlock(wheelFactor.residualBlockId);
+      }
+      if(!canMerge) {
+        ++wheelFactorStats_.dropped;
+        continue;
+      }
+      const ceres::WheelOdometryError& old = *wheelFactor.errorTerm;
+      WheelFactor merged;
+      merged.errorTerm.reset(new ceres::WheelOdometryError(
+          old.measurement(), old.sigmas(),
+          std::static_pointer_cast<ceres::ImuError>(previousImuLink.errorTerm)->imuMeasurements(),
+          imuParametersVec_.back(), previousState.timestamp, old.tw(), old.wheelParameters()));
+      merged.residualBlockId = problem_->AddResidualBlock(
+          merged.errorTerm.get(), wheelLossFunctionPtr_.get(),
+          previousState.pose->parameters(), previousState.speedAndBias->parameters());
+      previousState.WheelFactors.push_back(merged);
+      ++wheelFactorStats_.merged;
+    }
+  }
+
   // remove parameter blocks
   problem_->RemoveParameterBlock(state.pose->parameters());  // lose pose
   problem_->RemoveParameterBlock(state.speedAndBias->parameters());  // lose speed and bias

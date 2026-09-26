@@ -211,6 +211,23 @@ struct GpsParameters {
 };
 
 
+/**
+ * @brief mow-e (T-0125, ADR-0042 design item 3): wheel-encoder odometry parameters
+ *        (config block `wheel_parameters:`; names fixed by shared/contracts/wheel_odometry.md).
+ */
+struct WheelParameters {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    okvis::kinematics::Transformation T_SB; ///< Body frame B (base_link) in the IMU frame S.
+    double sigma_v = 0.05;       ///< Forward-speed sigma [m/s].
+    double sigma_lat = 0.5;      ///< Lateral (no-side-slip) sigma [m/s]; large where the planar assumption fails.
+    double sigma_vert = 0.5;     ///< Vertical sigma [m/s].
+    double sigma_omega = 0.05;   ///< Yaw-rate sigma [rad/s].
+    double b_eff = 0.5;          ///< Effective track width [m] (calibrated, see the contract).
+    double slip_gate_omega = 0.2; ///< |omega_enc - omega_gyro| above this [rad/s] -> factor skipped.
+    double slip_gate_v = 0.3;    ///< |v_enc - v_B,x(state)| above this [m/s] -> sigma_v inflated.
+    std::string loss = "cauchy"; ///< Robust loss: "cauchy" | "huber".
+};
+
 /// @brief  Struct to specify the parameters of a LiDAR sensor
 struct LidarParameters {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -227,6 +244,7 @@ struct ViParameters {
   CameraParameters camera; ///< Camera parameters.
   ImuParameters imu; ///< Imu parameters.
   std::optional<GpsParameters> gps; ///< Gps parameters.
+  std::optional<WheelParameters> wheel; ///< mow-e (T-0125): wheel odometry parameters.
   std::optional<LidarParameters> lidar; ///< LiDAR parameters
   FrontendParameters frontend; ///< Frontend parameters.
   EstimatorParameters estimator; ///< Estimator parameters.

@@ -55,6 +55,34 @@ int ViSlamBackend::addGps(const GpsParameters &gpsParameters)
   return realtimeGraph_.addGps(gpsParameters);
 }
 
+// mow-e (T-0125, ADR-0042 design item 3)
+int ViSlamBackend::addWheel(const WheelParameters &wheelParameters)
+{
+  fullGraph_.addWheel(wheelParameters);
+  return realtimeGraph_.addWheel(wheelParameters);
+}
+
+bool ViSlamBackend::addWheelMeasurementsOnAllGraphs(const WheelMeasurementDeque& wheelMeasurementDeque,
+                                                    const ImuMeasurementDeque& imuMeasurementDeque)
+{
+  if(!realtimeGraph_.wheelParameters_ || wheelMeasurementDeque.empty()) {
+    return false;
+  }
+  if(!isLoopClosing_ && !isLoopClosureAvailable_) {
+    const bool added = realtimeGraph_.addWheelMeasurements(wheelMeasurementDeque, imuMeasurementDeque, nullptr);
+    fullGraph_.addWheelMeasurements(wheelMeasurementDeque, imuMeasurementDeque, nullptr);
+    return added;
+  }
+  // full graph busy: attach to the realtime graph now, buffer for the full graph
+  std::deque<StateId> sids;
+  const bool added = realtimeGraph_.addWheelMeasurements(wheelMeasurementDeque, imuMeasurementDeque, &sids);
+  for(size_t i = 0; i < wheelMeasurementDeque.size() && i < sids.size(); ++i) {
+    if(!sids[i].isInitialised()) continue; // nothing to attach to
+    addWheelBacklog_.push_back(AddWheelBacklog{sids[i], wheelMeasurementDeque[i], imuMeasurementDeque});
+  }
+  return added;
+}
+
 bool ViSlamBackend::addGpsMeasurementsOnAllGraphs(GpsMeasurementDeque& inputgpsMeasurementDeque, ImuMeasurementDeque& imuMeasurementDeque){
   if(realtimeGraph_.gpsParametersVec_.empty()) {
     return false;
@@ -1764,6 +1792,34 @@ bool ViSlamBackend::synchroniseRealtimeAndFullGraph(std::vector<StateId> &update
   }
   // ----- gps stuff end -----
 
+  // ----- mow-e (T-0125): wheel odometry backlog -----
+  // Same re-anchoring as the GNSS backlog above: a state merged away while the loop
+  // closure ran gets its measurements attached to the surviving state before them,
+  // preintegrated over that state's (extended) IMU link.
+  for(const auto& addWheelMeas : addWheelBacklog_){
+      StateId id = addWheelMeas.id;
+      ImuMeasurementDeque imuMeasurements = addWheelMeas.imuMeasurements;
+      if(fullGraph_.states_.count(id) == 0) {
+        auto iter = fullGraph_.states_.upper_bound(id);
+        if(iter == fullGraph_.states_.begin()) {
+          ++wheelBacklogDropped_;
+          continue;
+        }
+        --iter;
+        id = iter->first;
+        if(fullGraph_.imuParametersVec_.at(0).use && iter->second.nextImuLink.errorTerm) {
+          imuMeasurements = std::static_pointer_cast<ceres::ImuError>(
+                iter->second.nextImuLink.errorTerm)->imuMeasurements();
+        }
+        ++wheelBacklogReanchored_;
+      }
+      if(!fullGraph_.addWheelMeasurement(id, addWheelMeas.wheelMeasurement, imuMeasurements)) {
+        ++wheelBacklogDropped_;
+      }
+  }
+  addWheelBacklog_.clear();
+  // ----- wheel odometry backlog end -----
+
   // ----- Submap Alignment Begin -----
   for(auto alignmentTerm : addSubmapAlignmentBacklog_){
     bool stillExistsInRealtimeGraph = fullGraph_.states_.count(StateId(alignmentTerm.frame_B_id)) !=0;
@@ -2362,6 +2418,19 @@ ViSlamBackend::GpsStats ViSlamBackend::gpsStats() const
   s.backlogReanchored = gpsBacklogReanchored_;
   s.backlogDropped = gpsBacklogDropped_;
   s.yawSigmaDegAtInit = realtimeGraph_.gpsYawSigmaDegAtInit();
+  return s;
+}
+
+// mow-e (T-0125)
+ViSlamBackend::WheelStats ViSlamBackend::wheelStats() const
+{
+  WheelStats s;
+  s.realtime = realtimeGraph_.wheelFactorStats();
+  s.full = fullGraph_.wheelFactorStats();
+  s.factorsInRealtimeGraph = realtimeGraph_.numWheelFactors();
+  s.factorsInFullGraph = fullGraph_.numWheelFactors();
+  s.backlogReanchored = wheelBacklogReanchored_;
+  s.backlogDropped = wheelBacklogDropped_;
   return s;
 }
 

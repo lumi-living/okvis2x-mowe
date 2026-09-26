@@ -427,6 +427,24 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
     LOG(INFO) << "No GPS declared";
   }
 
+  // mow-e (T-0125, ADR-0042 design item 3): wheel odometry parameters
+  if(file["wheel_parameters"].isMap()){
+    viParameters_.wheel = okvis::WheelParameters();
+    if(!getWheelCalibration(file["wheel_parameters"], *viParameters_.wheel)){
+      LOG(ERROR) << "Could not parse the wheel_parameters config";
+    } else {
+      const okvis::WheelParameters& w = *viParameters_.wheel;
+      LOG(INFO) << "Parsed wheel odometry with the following characteristics: \n"
+                << "\tT_SB: \n" << w.T_SB.T3x4() << " \n"
+                << "\tsigma_v/lat/vert/omega: " << w.sigma_v << " " << w.sigma_lat << " "
+                << w.sigma_vert << " " << w.sigma_omega << " \n"
+                << "\tb_eff: " << w.b_eff << ", slip_gate_omega: " << w.slip_gate_omega
+                << ", slip_gate_v: " << w.slip_gate_v << ", loss: " << w.loss;
+    }
+  } else {
+    LOG(INFO) << "No wheel odometry declared";
+  }
+
   // done!
   readConfigFile_ = true;
 }
@@ -697,6 +715,26 @@ bool ViParametersReader::getGpsCalibration(const cv::FileNode& calibrationNode, 
   parseEntry(calibrationNode, "robust_gps_init",
              gpsParameters.robustGpsInit);
 
+  return true;
+}
+
+// mow-e (T-0125): every key is required (no silent defaults on a sensor calibration).
+bool ViParametersReader::getWheelCalibration(const cv::FileNode& node, okvis::WheelParameters& p){
+  Eigen::Matrix4d T_SB;
+  parseEntry(node, "T_SB", T_SB);
+  p.T_SB = okvis::kinematics::Transformation(T_SB);
+  parseEntry(node, "sigma_v", p.sigma_v);
+  parseEntry(node, "sigma_lat", p.sigma_lat);
+  parseEntry(node, "sigma_vert", p.sigma_vert);
+  parseEntry(node, "sigma_omega", p.sigma_omega);
+  parseEntry(node, "b_eff", p.b_eff);
+  parseEntry(node, "slip_gate_omega", p.slip_gate_omega);
+  parseEntry(node, "slip_gate_v", p.slip_gate_v);
+  parseEntry(node, "loss", p.loss);
+  OKVIS_ASSERT_TRUE(Exception, p.loss == "cauchy" || p.loss == "huber",
+                    "wheel_parameters.loss must be cauchy|huber, got " << p.loss)
+  OKVIS_ASSERT_TRUE(Exception, p.b_eff > 0.0 && p.sigma_v > 0.0 && p.sigma_lat > 0.0
+                    && p.sigma_vert > 0.0 && p.sigma_omega > 0.0, "wheel_parameters: sigmas and b_eff must be > 0")
   return true;
 }
 

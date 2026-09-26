@@ -141,6 +141,14 @@ class ThreadedSlam : public ViInterface {
   /// \brief mow-e (T-0117): see ViInterface::gpsAlignmentStatus.
   virtual int gpsAlignmentStatus(double* yawSigmaDeg = nullptr) const override final;
 
+  /// \brief mow-e (T-0125, ADR-0042 design item 3): see ViInterface::addWheelMeasurement.
+  ///        Queued like GNSS, consumed in processFrame() once a later camera frame is processed.
+  virtual bool addWheelMeasurement(const okvis::Time & stamp, double vLeft, double vRight,
+                                   double bEff, int slipFlag) override final;
+
+  /// \brief mow-e (T-0125): wheel factor bookkeeping (counts, gates, gated stamps) as JSON.
+  void writeWheelStatsJson(const std::string& jsonFileName);
+
   /**
    * \brief          Add a GPS measurement with geodetic coordinates.
    * \param stamp    The measurement timestamp.
@@ -327,6 +335,8 @@ private:
 
   /// GPS measurement input queue
   threadsafe::Queue<okvis::GpsMeasurement> gpsMeasurementsReceived_;
+  /// mow-e (T-0125): wheel odometry input queue
+  threadsafe::Queue<okvis::WheelMeasurement> wheelMeasurementsReceived_;
 
   /// The queue containing the matching data
   threadsafe::Queue<ViVisualizer::VisualizationData::Ptr> visualisationData_;
@@ -379,6 +389,9 @@ private:
   std::atomic<size_t> gpsFixesReceived_{0}; ///< mow-e (T-0117): addGpsMeasurement() calls.
   std::vector<std::pair<okvis::Time, int>> gpsStatusTimeline_; ///< mow-e (T-0117): (frame time, status) at each change.
   int lastGpsStatus_ = -1; ///< mow-e (T-0117).
+  WheelMeasurementDeque wheelMeasurementDeque_; ///< mow-e (T-0125): wheel measurements to be used next.
+  std::atomic<size_t> wheelReceived_{0}; ///< mow-e (T-0125): addWheelMeasurement() calls.
+  std::atomic<size_t> wheelBeffMismatch_{0}; ///< mow-e (T-0125): messages whose b_eff differs > 5 % from the config.
   LidarMeasurementDeque lidarMeasurementDeque_;  ///< Stored lidar Measurements to be used next.
   DepthMeasurementDeque depthMeasurementDeque_; ///< Stored depth Measurements to be used next.
 

@@ -182,6 +182,8 @@ class ViParametersReader{
    * @return True if reading and parsing of calibration was successful.
    */
   bool getGpsCalibration(const cv::FileNode& calibrationNode, okvis::GpsParameters& gpsParameters);
+  /// \brief mow-e (T-0125): parse the wheel_parameters block.
+  bool getWheelCalibration(const cv::FileNode& calibrationNode, okvis::WheelParameters& wheelParameters);
 
 };
 

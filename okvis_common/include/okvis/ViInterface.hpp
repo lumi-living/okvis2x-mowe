@@ -443,6 +443,20 @@ class ViInterface
                                  const Eigen::Vector3d & /*errGps*/) { return false; }
 
   /**
+   * \brief mow-e (T-0125, ADR-0042 design item 3): add a wheel-encoder odometry
+   *        measurement (mowe_msgs/WheelSpeeds, shared/contracts/wheel_odometry.md v1).
+   *        Default: not supported.
+   * \param stamp    Time of validity on the IMU clock.
+   * \param vLeft    Left track ground speed [m/s], forward positive.
+   * \param vRight   Right track ground speed [m/s].
+   * \param bEff     Effective track width the publisher used [m] (0 = unknown).
+   * \param slipFlag 0 none, 1 suspected, 2 known.
+   * \return True if accepted.
+   */
+  virtual bool addWheelMeasurement(const okvis::Time & /*stamp*/, double /*vLeft*/, double /*vRight*/,
+                                   double /*bEff*/, int /*slipFlag*/) { return false; }
+
+  /**
    * \brief mow-e (T-0117): GNSS alignment state machine (ViGraph::gpsStatus:
    *        0 Off, 1 Idle, 2 Initialising, 3 Initialised, 4 ReInitialising).
    * \param[out] yawSigmaDeg If given, the yaw sigma [deg] of the T_GW fit at

@@ -25,7 +25,7 @@
  *  - okvis::Publisher takes three ThreadedPublishers (started below).
  *  - `shutdown` service (std_srvs/SetBool) as in okvis2x_node, final BA
  *    (if configured) and the final trajectory CSV in `csv_path`.
- *  - GNSS / wheel odometry are NOT wired yet: see docs/MOWE_TODO.md.
+ *  - GNSS in via /gnss/enu (T-0117), wheel odometry in via /wheel/speeds (T-0125).
  */
 #include <algorithm>
 #include <atomic>
@@ -57,6 +57,7 @@
 #include <mowe_msgs/msg/gnss_alignment_status.hpp>
 #include <mowe_msgs/msg/estimator_state.hpp>         // T-0124
 #include <mowe_msgs/msg/gnss_enu.hpp>              // T-0117
+#include <mowe_msgs/msg/wheel_speeds.hpp>          // T-0125
 #include <std_srvs/srv/set_bool.hpp>
 
 #include "mowe_camera/camera.hpp"
@@ -77,6 +78,8 @@ struct RunStats {
   std::atomic<uint64_t> imuIngested{0};     ///< addImuMeasurement() accepted
   std::atomic<uint64_t> gnssReceived{0};    ///< /gnss/enu messages (T-0117)
   std::atomic<uint64_t> gnssIngested{0};    ///< addGpsMeasurement() accepted (T-0117)
+  std::atomic<uint64_t> wheelReceived{0};   ///< /wheel/speeds messages (T-0125)
+  std::atomic<uint64_t> wheelIngested{0};   ///< addWheelMeasurement() accepted (T-0125)
   std::atomic<uint64_t> odomPublished{0};   ///< realtimePredictAndPublish() true
   std::atomic<int> crashes{0};              ///< fatal signals / uncaught exceptions
   std::atomic<int> engineLoaded{0};
@@ -136,6 +139,8 @@ static void writeStats() {
     << "  \"imu_ingested\": " << g_stats.imuIngested << ",\n"
     << "  \"gnss_received\": " << g_stats.gnssReceived << ",\n"
     << "  \"gnss_ingested\": " << g_stats.gnssIngested << ",\n"
+    << "  \"wheel_received\": " << g_stats.wheelReceived << ",\n"
+    << "  \"wheel_ingested\": " << g_stats.wheelIngested << ",\n"
     << "  \"odom_published\": " << g_stats.odomPublished << ",\n"
     << "  \"engine_loaded\": " << g_stats.engineLoaded << ",\n"
     << "  \"crashes\": " << g_stats.crashes << ",\n"
@@ -377,7 +382,19 @@ int main(int argc, char **argv) {
       gnssStatusPublisher->publish(msg);
     });
   }
-  // TODO(mow-e, docs/MOWE_TODO.md): wheel odometry subscription goes here (T-0125).
+  // Wheel odometry in (T-0125, ADR-0042 design item 3): /wheel/speeds from mowe_base_hw
+  // (shared/contracts/wheel_odometry.md v1), only when the config declares wheel_parameters.
+  rclcpp::Subscription<mowe_msgs::msg::WheelSpeeds>::SharedPtr wheelSubscription;
+  if (parameters.wheel) {
+    wheelSubscription = node->create_subscription<mowe_msgs::msg::WheelSpeeds>(
+        "/wheel/speeds", rclcpp::SensorDataQoS().keep_last(200),
+        [&estimator](const mowe_msgs::msg::WheelSpeeds &msg) {
+          const okvis::Time timestamp(msg.header.stamp.sec, msg.header.stamp.nanosec);
+          ++g_stats.wheelReceived;
+          if (estimator.addWheelMeasurement(timestamp, msg.v_left, msg.v_right, msg.b_eff, int(msg.slip_flag)))
+            ++g_stats.wheelIngested;
+        });
+  }
 
   // Camera in directly via mowe_camera_core (no ROS on the image path).
   mowe::camera::CameraConfig cam_cfg;

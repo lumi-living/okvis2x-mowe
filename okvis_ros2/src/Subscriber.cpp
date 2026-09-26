@@ -129,6 +129,27 @@ void Subscriber::setNodeHandle(std::shared_ptr<rclcpp::Node> node,
     gnssStatusTimer_ = node_->create_wall_timer(
       std::chrono::seconds(1), std::bind(&Subscriber::publishGnssAlignmentStatus, this));
   }
+
+  // mow-e (T-0125, ADR-0042 design item 3): wheel odometry in only when the config
+  // declares wheel_parameters. Sensor QoS per the contract: a lost message is a lost
+  // factor, never a stall.
+  if(parameters_.wheel) {
+    subWheel_ = node_->create_subscription<mowe_msgs::msg::WheelSpeeds>(
+      "/wheel/speeds", rclcpp::SensorDataQoS().keep_last(200),
+      std::bind(&Subscriber::wheelCallback, this, std::placeholders::_1));
+  }
+}
+
+void Subscriber::wheelCallback(const mowe_msgs::msg::WheelSpeeds& msg)
+{
+  ++wheelReceived_;
+  const okvis::Time timestamp(msg.header.stamp.sec, msg.header.stamp.nanosec);
+  if(viInterface_->addWheelMeasurement(timestamp, msg.v_left, msg.v_right, msg.b_eff, int(msg.slip_flag))) {
+    ++wheelAccepted_;
+  } else {
+    LOG_EVERY_N(WARNING, 500) << "[wheel] measurement not accepted by the estimator ("
+                              << wheelAccepted_ << "/" << wheelReceived_ << " accepted)";
+  }
 }
 
 void Subscriber::gnssCallback(const mowe_msgs::msg::GnssEnu& msg)
@@ -163,6 +184,7 @@ void Subscriber::shutdown() {
   }
   subImu_.reset();
   subGnss_.reset();          // mow-e (T-0117)
+  subWheel_.reset();         // mow-e (T-0125)
   gnssStatusTimer_.reset();  // mow-e (T-0117)
 }
 

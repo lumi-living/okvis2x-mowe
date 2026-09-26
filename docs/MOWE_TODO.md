@@ -60,10 +60,13 @@ To do:
    RTK data (thresholds in robust mode are tuned for SPP: 4 m RANSAC inliers,
    3σ gates, σ_h > 6 m reject).
 
-## 2. Wheel-encoder odometry factor — NEW
+## 2. Wheel-encoder odometry factor — DONE (T-0125, 2026-09-27)
 
-Nothing exists (no wheel/velocity/planar factor in OKVIS2-X or okvis2).
-Proposed design (research memo §3; inferred, not upstream):
+Built as designed below (`WheelOdometryError` = `SizedCostFunction<4,7,9>`, IMU-preintegrated
+like `GpsErrorAsynchronous`; merge in `eliminateStateByImuMerge`; backlog in `ViSlamBackend`;
+`ThreadedSlam::addWheelMeasurement`; `DatasetReader` `wheel0/data.csv`; `/wheel/speeds` in
+`Subscriber.cpp` + `okvis2x_node_mowe`; gtest `TestWheelOdometryError.cpp`; config
+`config/tumvi/okvis2-gnss-wheel.yaml`). Original plan kept for reference:
 
 1. `okvis_ceres/include/okvis/ceres/WheelOdometryError.hpp` + `src/WheelOdometryError.cpp`:
    `WheelOdometryError` on `(T_WS, SpeedAndBias)` of the preceding state,

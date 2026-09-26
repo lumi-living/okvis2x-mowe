@@ -42,6 +42,7 @@ add_library(${LIB_NAME}
   src/CeresIterationCallback.cpp
   src/ErrorInterface.cpp
   src/GpsErrorAsynchronous.cpp
+  src/WheelOdometryError.cpp # mow-e (T-0125, ADR-0042 design item 3)
   src/GpsErrorSynchronous.cpp
   src/HomogeneousPointError.cpp
   src/HomogeneousPointLocalParameterization.cpp
@@ -113,6 +114,7 @@ if(BUILD_TESTS)
     #test/TestPoseGraphError.cpp
     test/TestGpsError.cpp
     test/TestGpsMerge.cpp # mow-e (T-0117): GNSS factors survive eliminateStateByImuMerge
+    test/TestWheelOdometryError.cpp # mow-e (T-0125): wheel factor Jacobians, gating, merge
     test/TestHomogeneousPointError.cpp
     test/TestImuError.cpp
     test/TestPoseError.cpp

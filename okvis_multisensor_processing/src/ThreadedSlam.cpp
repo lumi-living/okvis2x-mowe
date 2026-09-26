@@ -96,6 +96,9 @@ void ThreadedSlam::init()
   if(parameters_.gps){
     estimator_.addGps(*parameters_.gps);
   }
+  if(parameters_.wheel){ // mow-e (T-0125)
+    estimator_.addWheel(*parameters_.wheel);
+  }
   estimator_.setDetectorUniformityRadius(parameters_.frontend.detection_threshold);
 
   // time limit if requested
@@ -378,6 +381,34 @@ bool ThreadedSlam::addGpsMeasurement(const okvis::Time& stamp,
 
 }
 
+// mow-e (T-0125, ADR-0042 design item 3): add a wheel odometry measurement.
+bool ThreadedSlam::addWheelMeasurement(const okvis::Time& stamp, double vLeft, double vRight,
+                                       double bEff, int slipFlag)
+{
+  if(!parameters_.wheel) {
+    return false;
+  }
+  ++wheelReceived_;
+  // shared/contracts/wheel_odometry.md: the estimator's b_eff must match the publisher's.
+  if(bEff > 0.0 && std::fabs(bEff - parameters_.wheel->b_eff) > 0.05 * parameters_.wheel->b_eff) {
+    ++wheelBeffMismatch_;
+    LOG_EVERY_N(WARNING, 500) << "[wheel] publisher b_eff " << bEff << " m differs > 5 % from wheel_parameters.b_eff "
+                              << parameters_.wheel->b_eff << " m (stale calibration?)";
+  }
+  okvis::WheelMeasurement m;
+  m.timeStamp = stamp;
+  m.measurement = okvis::WheelSensorReadings(vLeft, vRight, bEff, slipFlag);
+  const size_t wheelQueueSize = 20000; // 50 Hz x 400 s of blocking replay headroom
+  if (blocking_) {
+    return wheelMeasurementsReceived_.PushBlockingIfFull(m, wheelQueueSize);
+  }
+  if(wheelMeasurementsReceived_.PushNonBlockingDroppingIfFull(m, wheelQueueSize)) {
+    LOG(WARNING) << "wheel measurement drop ";
+    return false;
+  }
+  return true;
+}
+
 // Add a GPS measurement (geodetic input).
 bool ThreadedSlam::addGeodeticGpsMeasurement(const okvis::Time& stamp,
                                              double lat, double lon, double height,
@@ -516,6 +547,11 @@ bool ThreadedSlam::processFrame() {
     while(!gpsMeasurementsReceived_.Empty() && gpsMeasurementsReceived_.queue_.front().timeStamp < multiFrame ->timestamp()){
         gpsMeasurementsReceived_.PopBlocking(&gpsMeasurement);
     } // nothing else to do here for GPS
+    // mow-e (T-0125): same for wheel measurements older than the first state
+    while(!wheelMeasurementsReceived_.Empty() && wheelMeasurementsReceived_.queue_.front().timeStamp < multiFrame->timestamp()){
+        WheelMeasurement wheelMeasurement;
+        wheelMeasurementsReceived_.PopBlocking(&wheelMeasurement);
+    }
 
 
     // Drop the initial depth measurements. Otherwise, the queue would be full.
@@ -635,6 +671,15 @@ bool ThreadedSlam::processFrame() {
         if(gpsMeasurementsReceived_.PopBlocking(&gpsMeasurement))
         {
           gpsMeasurementDeque_.push_back(gpsMeasurement);
+        }
+    }
+    // mow-e (T-0125): and all wheel measurements before this frame
+    while(!shutdown_ && !wheelMeasurementsReceived_.Empty() && wheelMeasurementsReceived_.queue_.front().timeStamp < multiFrame->timestamp())
+    {
+        WheelMeasurement wheelMeasurement;
+        if(wheelMeasurementsReceived_.PopBlocking(&wheelMeasurement))
+        {
+          wheelMeasurementDeque_.push_back(wheelMeasurement);
         }
     }
 
@@ -862,6 +907,14 @@ bool ThreadedSlam::processFrame() {
   while(!shutdown_ && !gpsMeasurementDeque_.empty() && gpsMeasurementDeque_.front().timeStamp < multiFrame->timestamp() )
   {
     gpsMeasurementDeque_.pop_front();
+  }
+
+  // mow-e (T-0125, ADR-0042 design item 3): wheel odometry factors, next to GNSS.
+  // Every measurement in the deque precedes this frame, so it attaches to the latest
+  // state at/before it; the deque is then cleared (nothing older is ever re-used).
+  if(parameters_.wheel && !wheelMeasurementDeque_.empty()) {
+    estimator_.addWheelMeasurementsOnAllGraphs(wheelMeasurementDeque_, imuMeasurementDeque_);
+    wheelMeasurementDeque_.clear();
   }
 
   // remove lidarMeasurements from deque
@@ -1324,6 +1377,7 @@ void ThreadedSlam::stopThreading() {
   imuMeasurementsReceived_.Shutdown();
   cameraMeasurementsReceived_.Shutdown();
   gpsMeasurementsReceived_.Shutdown();
+  wheelMeasurementsReceived_.Shutdown(); // mow-e (T-0125)
   lidarMeasurementsReceived_.Shutdown();
   depthMeasurementsReceived_.Shutdown();
   submapAlignmentFactorsReceived_.Shutdown();
@@ -1553,6 +1607,47 @@ void ThreadedSlam::writeGnssStatsJson(const std::string& jsonFileName)
       << ", \"status\": " << gpsStatusTimeline_[i].second << ", \"name\": \"" << name(gpsStatusTimeline_[i].second) << "\"}";
   }
   f << (gpsStatusTimeline_.empty() ? "]\n" : "\n  ]\n");
+  f << "}\n";
+}
+
+// mow-e (T-0125): plain ostream JSON. Definitions:
+//   wheel_received                 addWheelMeasurement() calls
+//   wheel_factors_added            factors created on the realtime graph (after gating)
+//   wheel_factors_gated            measurements gated by either gate (omega: skipped; v: sigma inflated)
+//   factors_survive_elimination_ratio  wheel factors in the full graph at the end / factors added
+//                                  on the full graph (the full graph keeps every state, so this
+//                                  is what survived eliminateStateByImuMerge + the backlog)
+//   gated_times_ns                 stamps of the gated measurements (for windowed counts)
+void ThreadedSlam::writeWheelStatsJson(const std::string& jsonFileName)
+{
+  const ViSlamBackend::WheelStats s = estimator_.wheelStats();
+  const size_t gatedRealtime = s.realtime.gatedOmega + s.realtime.gatedV;
+  std::ofstream f(jsonFileName);
+  f << std::setprecision(12);
+  f << "{\n";
+  f << "  \"wheel_received\": " << wheelReceived_.load() << ",\n";
+  f << "  \"wheel_beff_mismatch\": " << wheelBeffMismatch_.load() << ",\n";
+  f << "  \"wheel_factors_added\": " << s.realtime.added << ",\n";
+  f << "  \"wheel_factors_added_full\": " << s.full.added << ",\n";
+  f << "  \"wheel_factors_gated\": " << gatedRealtime << ",\n";
+  f << "  \"wheel_factors_gated_omega\": " << s.realtime.gatedOmega << ",\n";
+  f << "  \"wheel_factors_gated_v\": " << s.realtime.gatedV << ",\n";
+  f << "  \"wheel_factors_slip_flagged\": " << s.realtime.slipFlagged << ",\n";
+  f << "  \"factors_merged_on_elimination_realtime\": " << s.realtime.merged << ",\n";
+  f << "  \"factors_merged_on_elimination_full\": " << s.full.merged << ",\n";
+  f << "  \"factors_dropped_on_elimination_realtime\": " << s.realtime.dropped << ",\n";
+  f << "  \"factors_dropped_on_elimination_full\": " << s.full.dropped << ",\n";
+  f << "  \"factors_in_realtime_graph_final\": " << s.factorsInRealtimeGraph << ",\n";
+  f << "  \"factors_in_full_graph_final\": " << s.factorsInFullGraph << ",\n";
+  f << "  \"backlog_reanchored_full\": " << s.backlogReanchored << ",\n";
+  f << "  \"backlog_dropped_full\": " << s.backlogDropped << ",\n";
+  f << "  \"factors_survive_elimination_ratio\": "
+    << (s.full.added ? double(s.factorsInFullGraph) / double(s.full.added) : 0.0) << ",\n";
+  f << "  \"gated_times_ns\": [";
+  for(size_t i = 0; i < s.realtime.gatedTimesNs.size(); ++i) {
+    f << (i ? ", " : "") << s.realtime.gatedTimesNs[i];
+  }
+  f << "]\n";
   f << "}\n";
 }
 

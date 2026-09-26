@@ -92,6 +92,9 @@ class ViSlamBackend //: public VioBackendInterface
    */
   int addGps(const okvis::GpsParameters & gpsParameters);
 
+  /// \brief mow-e (T-0125, ADR-0042 design item 3): configure wheel odometry on both graphs.
+  int addWheel(const okvis::WheelParameters & wheelParameters);
+
 
   /**
    * @brief Add a pose to the state.
@@ -345,6 +348,17 @@ class ViSlamBackend //: public VioBackendInterface
     double yawSigmaDegAtInit = 0.0; ///< Yaw sigma [deg] when T_GW became Initialised (NaN if never).
   };
   GpsStats gpsStats() const;
+
+  /// \brief mow-e (T-0125): wheel factor bookkeeping for wheel_stats.json.
+  struct WheelStats {
+    ViGraph::WheelFactorStats realtime; ///< Counters of the realtime graph.
+    ViGraph::WheelFactorStats full;     ///< Counters of the full graph.
+    size_t factorsInRealtimeGraph = 0;  ///< Wheel factors currently attached in the realtime graph.
+    size_t factorsInFullGraph = 0;      ///< Wheel factors currently attached in the full graph.
+    size_t backlogReanchored = 0;       ///< Loop-closure-backlogged measurements re-anchored (full graph).
+    size_t backlogDropped = 0;          ///< Backlogged measurements that could not be attached.
+  };
+  WheelStats wheelStats() const;
 
   /**
    * @brief Is a state a keyframe?
@@ -645,6 +659,12 @@ class ViSlamBackend //: public VioBackendInterface
   /// \return True if alignment has been applied, false if not
   bool tryGpsAlignment();
 
+  /// \brief mow-e (T-0125, ADR-0042 design item 3): add wheel odometry factors on both graphs
+  ///        (backlogged for the full graph while a loop closure runs, like GNSS).
+  /// \return True if anything was added.
+  bool addWheelMeasurementsOnAllGraphs(const WheelMeasurementDeque& wheelMeasurementDeque,
+                                       const ImuMeasurementDeque& imuMeasurementDeque);
+
 
   /// \brief Debugging function to dump residual values of a graph
   void dumpGpsResiduals(const std::string &gpsResCsvFileName)
@@ -797,6 +817,16 @@ private:
       bool reInitFlag;
   };
   AlignedVector<AddGpsBacklog> addGpsBacklog_;
+  /// \brief mow-e (T-0125): wheel measurements waiting for the full graph during a loop closure.
+  struct AddWheelBacklog{
+      EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+      StateId id;
+      WheelMeasurement wheelMeasurement;
+      ImuMeasurementDeque imuMeasurements;
+  };
+  AlignedVector<AddWheelBacklog> addWheelBacklog_;
+  size_t wheelBacklogReanchored_ = 0; ///< mow-e (T-0125).
+  size_t wheelBacklogDropped_ = 0;    ///< mow-e (T-0125).
 
   // Backlog for Submap Alignment Constraints
   struct AddSubmapAlignmentBacklog{

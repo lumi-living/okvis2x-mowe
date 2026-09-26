@@ -265,6 +265,20 @@ int ViGraph::addImu(const ImuParameters& imuParameters) {
   return static_cast<int>(imuParametersVec_.size()) - 1;
 }
 
+// mow-e (T-0125, ADR-0042 design item 3): configure wheel odometry.
+int ViGraph::addWheel(const WheelParameters& wheelParameters) {
+  wheelParameters_ = wheelParameters;
+  // Robust loss on the whitened residual: 2 sigma before the loss flattens; skid/slip that
+  // gets past the gates (encoders sit before the 30:1 gearbox, ADR-0012) must not pull the
+  // graph. Following ViGraph::checkValidGpsMeasurements' intent, not its thresholds.
+  if(wheelParameters.loss == "huber") {
+    wheelLossFunctionPtr_.reset(new ::ceres::HuberLoss(2.0));
+  } else {
+    wheelLossFunctionPtr_.reset(new ::ceres::CauchyLoss(2.0));
+  }
+  return 0;
+}
+
 // Add a GPS sensor to the configuration.
 int ViGraph::addGps(const GpsParameters& gpsParameters) {
   if (gpsParametersVec_.size() > 1) {
@@ -475,6 +489,7 @@ StateId ViGraph::addStatesPropagate(const Time &timestamp,
   // GPS trafo: point back to initial parameter blocj
   state.T_GW = lastState.T_GW;
   state.GpsFactors.clear();
+  state.WheelFactors.clear(); // mow-e (T-0125)
 
   states_[id] = state; // actually add...
   AnyState anyState;
@@ -1009,6 +1024,119 @@ bool ViGraph::addGpsMeasurement(StateId poseId, GpsMeasurement &gpsMeas, const I
 
     return true;
 
+}
+
+// mow-e (T-0125, ADR-0042 design item 3): one wheel measurement -> one factor on poseId,
+// with the slip gates. The yaw-rate gate compares the encoder yaw rate with the
+// bias-corrected gyro at tw (the gyro is authoritative: a slipping track spins faster than
+// the robot yaws) and SKIPS the measurement. The speed gate compares the encoder speed
+// with the state's velocity in B (at tk, no propagation -- the gap is <= one frame on a
+// fresh state) and INFLATES sigma_v, because early in a run the VIO velocity is the less
+// trustworthy of the two. A publisher-side slip flag inflates sigma_v and sigma_omega.
+bool ViGraph::addWheelMeasurement(StateId poseId, const WheelMeasurement& wheelMeas,
+                                  const ImuMeasurementDeque& imuMeasurements) {
+  OKVIS_ASSERT_TRUE(Exception, wheelParameters_, "addWheelMeasurement() without addWheel()")
+  OKVIS_ASSERT_TRUE(Exception, states_.count(poseId), "stateId " << poseId.value() << " not found")
+  State& state = states_.at(poseId);
+  OKVIS_ASSERT_TRUE(Exception, wheelMeas.timeStamp >= state.timestamp,
+                    "wheel measurement too old to add to state")
+  if(imuMeasurements.empty() || !(imuMeasurements.front().timeStamp <= state.timestamp)) {
+    LOG_EVERY_N(WARNING, 100) << "IMU measurements for adding a wheel factor are not old enough";
+    return false;
+  }
+  if(!(imuMeasurements.back().timeStamp >= wheelMeas.timeStamp)) {
+    LOG_EVERY_N(WARNING, 100) << "IMU measurements do not cover the wheel measurement";
+    return false;
+  }
+  const WheelParameters& wp = *wheelParameters_;
+  const double v_enc = wheelMeas.measurement.speed();
+  const double omega_enc = wheelMeas.measurement.yawRate(wp.b_eff);
+
+  // gates against the current estimate
+  const kinematics::Transformation T_WS = state.pose->estimate();
+  const SpeedAndBias sb = state.speedAndBias->estimate();
+  const Eigen::Matrix3d C_BS = wp.T_SB.C().transpose();
+  const Eigen::Vector3d omega_S = ceres::WheelOdometryError::gyroAt(imuMeasurements, wheelMeas.timeStamp)
+                                  - sb.segment<3>(3);
+  const double omega_gyro_z = (C_BS * omega_S)[2];
+  ceres::WheelOdometryError::sigmas_t sigmas(wp.sigma_v, wp.sigma_lat, wp.sigma_vert, wp.sigma_omega);
+  bool gated = false;
+  if(std::fabs(omega_enc - omega_gyro_z) > wp.slip_gate_omega) {
+    ++wheelFactorStats_.gatedOmega;
+    wheelFactorStats_.gatedTimesNs.push_back(wheelMeas.timeStamp.toNSec());
+    return false;
+  }
+  const Eigen::Vector3d v_B = C_BS * (T_WS.C().transpose() * sb.head<3>() + omega_S.cross(wp.T_SB.r()));
+  if(std::fabs(v_enc - v_B[0]) > wp.slip_gate_v) {
+    ++wheelFactorStats_.gatedV;
+    sigmas[0] *= 4.0;
+    gated = true;
+  }
+  if(wheelMeas.measurement.slip_flag != 0) {
+    ++wheelFactorStats_.slipFlagged;
+    sigmas[0] *= 3.0;
+    sigmas[3] *= 3.0;
+  }
+  if(gated) wheelFactorStats_.gatedTimesNs.push_back(wheelMeas.timeStamp.toNSec());
+
+  WheelFactor factor;
+  factor.errorTerm.reset(new ceres::WheelOdometryError(
+      ceres::WheelOdometryError::measurement_t(v_enc, omega_enc), sigmas, imuMeasurements,
+      imuParametersVec_.back(), state.timestamp, wheelMeas.timeStamp, wp));
+  factor.residualBlockId = problem_->AddResidualBlock(
+      factor.errorTerm.get(), wheelLossFunctionPtr_.get(),
+      state.pose->parameters(), state.speedAndBias->parameters());
+  state.WheelFactors.push_back(factor);
+  ++wheelFactorStats_.added;
+  return true;
+}
+
+// mow-e (T-0125): mirrors addGpsMeasurements' reverse walk (latest state at/before each measurement).
+bool ViGraph::addWheelMeasurements(const WheelMeasurementDeque& wheelMeasurementDeque,
+                                   const ImuMeasurementDeque& imuMeasurementDeque, std::deque<StateId>* sids) {
+  if(sids) sids->clear();
+  if(wheelMeasurementDeque.empty() || imuMeasurementDeque.empty() || states_.empty()) return false;
+  if(!(imuMeasurementDeque.front().timeStamp <= wheelMeasurementDeque.front().timeStamp)) {
+    LOG_EVERY_N(WARNING, 100) << "IMU measurements not old enough for wheel measurement. Can happen in beginning.";
+    return false;
+  }
+  bool any = false;
+  auto rIterStates = states_.rbegin();
+  for(auto rIterMeas = wheelMeasurementDeque.rbegin(); rIterMeas != wheelMeasurementDeque.rend(); ++rIterMeas) {
+    while(rIterStates != states_.rend() && rIterStates->second.timestamp > rIterMeas->timeStamp) {
+      ++rIterStates;
+    }
+    if(rIterStates == states_.rend()) {
+      if(sids) sids->push_front(StateId(0)); // nothing to attach to
+      continue;
+    }
+    if(sids) sids->push_front(rIterStates->first);
+    if(imuMeasurementDeque.back().timeStamp < rIterMeas->timeStamp) continue; // not covered yet
+    any |= addWheelMeasurement(rIterStates->first, *rIterMeas, imuMeasurementDeque);
+  }
+  return any;
+}
+
+size_t ViGraph::numWheelFactors(StateId id, size_t* inProblem) const {
+  auto it = states_.find(id);
+  if(it == states_.end()) return 0;
+  if(inProblem) {
+    *inProblem = 0;
+    for(const auto& f : it->second.WheelFactors) if(f.residualBlockId) ++(*inProblem);
+  }
+  return it->second.WheelFactors.size();
+}
+
+size_t ViGraph::numWheelFactors() const {
+  size_t n = 0;
+  for(const auto& s : states_) n += s.second.WheelFactors.size();
+  return n;
+}
+
+std::shared_ptr<const ceres::WheelOdometryError> ViGraph::wheelErrorTerm(StateId id, size_t k) const {
+  auto it = states_.find(id);
+  if(it == states_.end() || k >= it->second.WheelFactors.size()) return nullptr;
+  return it->second.WheelFactors[k].errorTerm;
 }
 
 // mow-e (T-0117)

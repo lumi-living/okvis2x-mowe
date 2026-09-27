@@ -1011,9 +1011,15 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
   // optimise (if initialised)
   TimerSwitchable optimiseTimer("3 Optimise");
   std::vector<StateId> updatedStatesRealtime;
+  // mow-e (T-0127, mowe-nav-kb 08): blocking (synchronous replay) mode must be
+  // deterministic. Ceres with num_threads > 1 sums Schur-complement and gradient
+  // contributions in thread-scheduling order, so identical inputs gave different
+  // trajectories run to run (TUM-VI room1 XFeat VIO: 0.085 vs 0.126 m on one binary).
+  // One thread makes the solve order fixed; live (non-blocking) mode keeps the config value.
+  const int realtimeThreads = blocking_ ? 1 : parameters_.estimator.realtime_num_threads;
   estimator_.optimiseRealtimeGraph(
       parameters_.estimator.realtime_max_iterations, updatedStatesRealtime,
-      parameters_.estimator.realtime_num_threads,
+      realtimeThreads,
       false, false, frontend_.isInitialized());
   optimiseTimer.stop();
 

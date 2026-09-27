@@ -169,6 +169,17 @@ TEST(LoopClosureGates, SyntheticPnpWithKnownOutliers) {
   const Transformation dT = T_Sold_Snew_gt.inverse() * T_Sold_Snew;
   EXPECT_LT(dT.r().norm(), 0.10);
   EXPECT_LT(2.0 * std::atan2(dT.q().vec().norm(), std::abs(dT.q().w())) * 180.0 / M_PI, 2.0);
+
+  // T-0127: the Frame*SacProblem wrappers seed OpenGV with a fixed seed, so the same
+  // data gives the bit-identical minimal-sample model (was time(0)+clock(): differed per call).
+  Transformation T2;
+  std::vector<bool> inlierMask2;
+  std::vector<size_t> camIdx2, kpIdx2;
+  EXPECT_EQ(okvis::loopclosure::ransacAbsolutePose(
+                points, matches, frame, ransacThresholdFromPixels(2.0, 16.0), 200, T2,
+                inlierMask2, camIdx2, kpIdx2), numInliers);
+  EXPECT_EQ(inlierMask2, inlierMask);
+  EXPECT_TRUE(T2.T() == T_Sold_Snew.T());
 }
 
 TEST(LoopClosureGates, PnpTooFewCorrespondencesIsRejected) {

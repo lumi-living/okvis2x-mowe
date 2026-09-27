@@ -104,6 +104,21 @@ int main(int argc, char **argv)
     }
   }
 
+  // mowe (T-0120): mirror every glog line into <save-folder>/run.log so the
+  // FOREIGN-MAP LOOP lines survive the runner's `| tail -30`
+  // (tools/eval/check_foreign_loops.py reads them). Leaked on purpose: a sink
+  // must outlive every logging thread, and the process ends right after.
+  struct RunLogSink : google::LogSink {
+    std::ofstream f;
+    explicit RunLogSink(const std::string& path) : f(path, std::ios::trunc) {}
+    void send(google::LogSeverity, const char*, const char* base, int line,
+              const struct ::tm* t, const char* msg, size_t n) override {  // glog 0.5 (sysroot)
+      f << t->tm_hour << ':' << t->tm_min << ':' << t->tm_sec << ' '
+        << base << ':' << line << "] " << std::string(msg, n) << '\n';
+    }
+  };
+  google::AddLogSink(new RunLogSink(savePath + "/run.log"));
+
   // read configuration file
   std::string configFilename(argv[1]);
 

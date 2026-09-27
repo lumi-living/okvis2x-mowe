@@ -134,7 +134,12 @@ gps_parameters:
 #   T_SB             body frame B in the IMU frame S; TUM-VI has no body frame -> identity
 #   sigma_v          forward-speed sigma [m/s]; synthetic noise is 0.02
 #   sigma_lat/vert   [m/s], LARGE: the rig is not planar (see the header)
-#   sigma_omega      yaw-rate sigma [rad/s]; synthetic noise is 0.01
+#   sigma_omega      yaw-rate sigma [rad/s], INFLATED per ADR-0042 (3): the gyro is the
+#                    authoritative yaw-rate source, the encoder only backs it up. The synthetic
+#                    signal (0.1 s mocap differencing) disagrees with the room1 gyro by
+#                    0.06 rad/s 1-sigma with 0.1 s correlation; at 0.03 (T-0125 attempt 1) the
+#                    factor pinned b_g,z to that noise and doubled the position error in
+#                    the first 20 s of the run (attempt 3 measurement, 17 vs 11.5 mm RMSE)
 #   b_eff            effective track width [m]; MUST equal tumvi_synth_wheel.py --b-eff
 #   slip_gate_omega  |omega_enc - omega_gyro| [rad/s] above which the measurement is skipped
 #   slip_gate_v      |v_enc - v_B,x| [m/s] above which sigma_v is inflated x4
@@ -148,7 +153,7 @@ wheel_parameters:
     sigma_v: 0.05
     sigma_lat: 5.0
     sigma_vert: 5.0
-    sigma_omega: 0.03
+    sigma_omega: 0.3
     b_eff: 0.5
     slip_gate_omega: 0.15
     slip_gate_v: 0.3

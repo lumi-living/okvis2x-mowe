@@ -300,6 +300,16 @@ class Frontend : public ViFrontendInterface {
   /// \brief Write this run's VPR keyframe database as keyframes.bin.
   bool saveKeyframes(const Estimator& estimator, const std::string& path) const;
 
+  /// \brief T-0121: write the per-lawn map (.mowemap v1, docs/design/mowemap-format.md):
+  ///        the VPR keyframe database with XFeat features + S-frame landmarks, the derived
+  ///        landmark table, the full graph's pose-graph edges, and engine/vocabulary/rig
+  ///        hashes. configPath / datasetPath are provenance strings. False if VPR is off.
+  bool saveMowemap(const Estimator& estimator, const cameras::NCameraSystem& cameraSystem,
+                   const std::string& path, const std::string& configPath,
+                   const std::string& datasetPath) const;
+  /// \brief FNV-1a over the rig (T_SC, image size, intrinsics) — .mowemap calibration_hash.
+  static uint64_t calibrationHash(const cameras::NCameraSystem& cameraSystem);
+
   /// \brief Loop-closure funnel counters (in-session and foreign-map), written by
   ///        the apps as loop_stats.json.
   struct LoopStats {

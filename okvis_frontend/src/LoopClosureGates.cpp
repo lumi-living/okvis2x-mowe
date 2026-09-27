@@ -7,6 +7,7 @@
 #include <okvis/LoopClosureGates.hpp>
 
 #include <opengv/absolute_pose/LoopclosureNoncentralAbsoluteAdapter.hpp>
+#include <opengv/absolute_pose/methods.hpp>
 #include <opengv/sac/Ransac.hpp>
 #include <opengv/sac_problems/absolute_pose/FrameAbsolutePoseSacProblem.hpp>
 
@@ -20,7 +21,8 @@ int ransacAbsolutePose(const AlignedMap<uint64_t, Eigen::Vector4d>& points,
                        kinematics::Transformation& T_Sold_Snew,
                        std::vector<bool>& inlierMask,
                        std::vector<size_t>& camIndices,
-                       std::vector<size_t>& keypointIndices) {
+                       std::vector<size_t>& keypointIndices,
+                       bool refine) {
   opengv::absolute_pose::LoopclosureNoncentralAbsoluteAdapter adapter(
       points, matches, frameNew->cameraSystem(), frameNew);
   typedef opengv::sac_problems::absolute_pose::FrameAbsolutePoseSacProblem<
@@ -49,6 +51,17 @@ int ransacAbsolutePose(const AlignedMap<uint64_t, Eigen::Vector4d>& points,
   }
   Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
   T.topLeftCorner<3, 4>() = ransac.model_coefficients_;
+  if (refine && ransac.inliers_.size() >= 6) {
+    // T-0121: Levenberg-Marquardt on the inlier bearing residuals, seeded with the
+    // RANSAC model (OpenGV reads the seed from the adapter's t12 / R12).
+    adapter.sett(ransac.model_coefficients_.col(3));
+    adapter.setR(ransac.model_coefficients_.leftCols<3>());
+    const opengv::transformation_t refined =
+        opengv::absolute_pose::optimize_nonlinear(adapter, ransac.inliers_);
+    if (refined.allFinite()) {
+      T.topLeftCorner<3, 4>() = refined;
+    }
+  }
   T_Sold_Snew = kinematics::Transformation(T);
   return int(ransac.inliers_.size());
 }

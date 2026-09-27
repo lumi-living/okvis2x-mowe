@@ -84,6 +84,10 @@ if(USE_MOWE_XFEAT)
   # T-0120: DINOv2+VLAD place recognition replaces DBoW2 on the float path
   # (onboard/localization/mowe_vpr; embedder = TensorRT via mowe_perception).
   target_link_libraries(${LIB_NAME} PRIVATE mowe_vpr::embedder)
+  # T-0121: .mowemap writer (Frontend::saveMowemap) + boot relocaliser
+  # (onboard/localization/mowe_map is header-only; Relocaliser needs LighterGlue).
+  target_sources(${LIB_NAME} PRIVATE include/mowe_map/Relocaliser.hpp src/Relocaliser.cpp)
+  target_link_libraries(${LIB_NAME} PUBLIC mowe_map::mowe_map mowe_vpr::vpr_core)
 endif()
 add_library(okvis::Frontend ALIAS ${LIB_NAME})
 

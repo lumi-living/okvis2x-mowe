@@ -266,6 +266,8 @@ if(USE_MOWE_XFEAT)
   add_subdirectory(okvis_xfeat_frontend)
   # T-0120: VPR loop closure (DINOv2 embedder + VLAD retrieval) for okvis_frontend.
   find_package(mowe_vpr REQUIRED)
+  # T-0121: per-lawn map container (.mowemap) for saveMowemap / Relocaliser.
+  find_package(mowe_map REQUIRED)
 endif()
 
 add_subdirectory(okvis_frontend)
@@ -330,6 +332,11 @@ if(BUILD_APPS)
     target_link_libraries(loop_verify_offline ${OpenCV_LIBS} okvis::Frontend okvis::XFeatFrontend okvis::Common)
     target_compile_options(loop_verify_offline PUBLIC ${OKVIS_PUBLIC_CXX_FLAGS} PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
     install(TARGETS loop_verify_offline RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # mow-e T-0121: boot relocalisation harness (room2 against the room1 .mowemap).
+    add_executable(mowe_reloc_eval okvis_apps/src/mowe_reloc_eval.cpp)
+    target_link_libraries(mowe_reloc_eval ${OpenCV_LIBS} okvis::Frontend okvis::XFeatFrontend okvis::Common mowe_vpr::embedder)
+    target_compile_options(mowe_reloc_eval PUBLIC ${OKVIS_PUBLIC_CXX_FLAGS} PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+    install(TARGETS mowe_reloc_eval RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   endif()
 
   add_executable(okvis2x_app_synchronous

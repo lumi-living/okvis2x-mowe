@@ -66,6 +66,9 @@ int main(int argc, char **argv)
   // mowe_localization_outputs can be replayed on the device without the estimator
   // (replay_okvis_states). Format: docs in onboard/localization/mowe_localization_outputs/README.md.
   std::string statesLog;
+  // mowe (T-0121): `--save-map <file.mowemap>` writes the per-lawn map at the end of the
+  // run (docs/design/mowemap-format.md) — needs frontend_parameters.vpr.
+  std::string saveMap;
   {
     std::vector<char*> args;
     for (int i = 0; i < argc; ++i) {
@@ -73,6 +76,8 @@ int main(int argc, char **argv)
         preloadMap = argv[++i];
       } else if (std::string(argv[i]) == "--states-log" && i + 1 < argc) {
         statesLog = argv[++i];
+      } else if (std::string(argv[i]) == "--save-map" && i + 1 < argc) {
+        saveMap = argv[++i];
       } else {
         args.push_back(argv[i]);
       }
@@ -85,7 +90,7 @@ int main(int argc, char **argv)
   // current directory, so the overnight verify can `cd out/<ticket> && run` (T-0107).
   if (argc < 3 || argc > 5) {
     LOG(ERROR)<<
-    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [save-folder] [-rpg] [--preload-map keyframes.bin]";
+    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [save-folder] [-rpg] [--preload-map keyframes.bin] [--save-map file.mowemap] [--states-log states.jsonl]";
     return EXIT_FAILURE;
   }
 
@@ -325,6 +330,13 @@ int main(int argc, char **argv)
       if (estimator.frontend().usingVprLoopClosure()) {
         estimator.frontend().writeLoopStatsJson(savePath+"/loop_stats.json");
         estimator.saveKeyframes(savePath+"/keyframes.bin");
+      }
+      if (!saveMap.empty()) {
+        // T-0121: per-lawn map for boot relocalisation (mowe_map::Relocaliser).
+        if (!estimator.saveMowemap(saveMap, configFilename, path)) {
+          LOG(ERROR) << "--save-map " << saveMap << " failed (is frontend_parameters.vpr configured?)";
+          return EXIT_FAILURE;
+        }
       }
       break;
     }

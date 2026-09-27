@@ -2251,6 +2251,46 @@ void ViSlamBackend::doFinalBa(
   cleanUnobservedLandmarks();
 }
 
+std::vector<ViSlamBackend::PoseGraphEdge> ViSlamBackend::poseGraphEdges() const
+{
+  // mow-e (T-0121): each link is stored on both of its states — emit it once.
+  // The full graph keeps its links as TwoPoseGraphErrorConst (addExternalTwoPoseLink),
+  // which expose no strength(); the realtime graph's live TwoPoseLinks do, so take the
+  // strength from there when the same pair exists, else 0 (writer uses a 1 m sigma).
+  std::map<std::pair<uint64_t, uint64_t>, double> strengths;
+  for (const auto& state : realtimeGraph_.states_) {
+    for (const auto& link : state.second.twoPoseLinks) {
+      if (link.second.errorTerm) {
+        strengths[{std::min(state.first.value(), link.first.value()),
+                   std::max(state.first.value(), link.first.value())}] = link.second.errorTerm->strength();
+      }
+    }
+  }
+  std::vector<PoseGraphEdge> edges;
+  auto emit = [&](StateId s0, StateId s1, double strength) {
+    if (!(s0 < s1) || !fullGraph_.states_.count(s1)) {
+      return;
+    }
+    PoseGraphEdge e;
+    e.state0 = s0.value();
+    e.state1 = s1.value();
+    e.T_S0S1 = fullGraph_.pose(s0).inverse() * fullGraph_.pose(s1);
+    e.strength = strength;
+    edges.push_back(e);
+  };
+  for (const auto& state : fullGraph_.states_) {
+    for (const auto& link : state.second.twoPoseLinks) {
+      emit(state.first, link.first, link.second.errorTerm ? link.second.errorTerm->strength() : 0.0);
+    }
+    for (const auto& link : state.second.twoPoseConstLinks) {
+      const auto it = strengths.find({std::min(state.first.value(), link.first.value()),
+                                      std::max(state.first.value(), link.first.value())});
+      emit(state.first, link.first, it == strengths.end() ? 0.0 : it->second);
+    }
+  }
+  return edges;
+}
+
 bool ViSlamBackend::saveMap(std::string path)
 {
   // save in g2o format

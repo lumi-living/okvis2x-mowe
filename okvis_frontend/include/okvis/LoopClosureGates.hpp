@@ -111,6 +111,9 @@ class TemporalConsistency {
 /// \param frameNew   The new multi-frame (keypoints, back-projections, T_SC).
 /// \param threshold  SAC threshold (see ransacThresholdFromPixels).
 /// \param maxIterations RANSAC iterations.
+/// \param refine     T-0121: after RANSAC, OpenGV non-linear refinement of the pose on
+///                   the inliers (opengv::absolute_pose::optimize_nonlinear); the minimal
+///                   GP3P sample alone is too noisy to seed a boot pose.
 /// \param[out] T_Sold_Snew  Pose of the new sensor frame in S_old.
 /// \param[out] inlierMask   Per-correspondence inlier flags, in adapter order.
 /// \param[out] camIndices/keypointIndices  Adapter order -> (camera, keypoint) of frameNew.
@@ -122,7 +125,8 @@ int ransacAbsolutePose(const AlignedMap<uint64_t, Eigen::Vector4d>& points,
                        kinematics::Transformation& T_Sold_Snew,
                        std::vector<bool>& inlierMask,
                        std::vector<size_t>& camIndices,
-                       std::vector<size_t>& keypointIndices);
+                       std::vector<size_t>& keypointIndices,
+                       bool refine = false);
 
 }  // namespace loopclosure
 }  // namespace okvis

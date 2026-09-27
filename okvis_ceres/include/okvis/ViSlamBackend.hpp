@@ -605,6 +605,17 @@ class ViSlamBackend //: public VioBackendInterface
   /// \param path CSV file path.
   bool saveMap(std::string path);
 
+  /// \brief mow-e (T-0121): pose-graph edges of the full graph for the .mowemap.
+  ///        T_S0S1 from the current estimates; strength = TwoPoseGraphError::strength()
+  ///        (inverse position std [1/m], 0 when rank-deficient) — the only public
+  ///        uncertainty the error term exposes (docs/design/mowemap-format.md).
+  struct PoseGraphEdge {
+    uint64_t state0, state1;
+    kinematics::Transformation T_S0S1;
+    double strength;
+  };
+  std::vector<PoseGraphEdge> poseGraphEdges() const;
+
   /// \brief Check if currently closing loop.
   /// \return True if it is.
   bool isLoopClosing() const { return isLoopClosing_; }

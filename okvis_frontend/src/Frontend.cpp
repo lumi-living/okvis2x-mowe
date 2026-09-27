@@ -73,6 +73,7 @@
 #include <okvis/xfeat/LighterGlueMatcher.hpp>
 #include <okvis/xfeat/XFeatFeatures.hpp>
 #include <okvis/xfeat/XFeatFrontend.hpp>
+#include <mowe_map/mowemap.hpp>  // T-0121 .mowemap writer
 // T-0120: VPR loop closure (DINOv2 embedder, VLAD, brute-force retrieval).
 #include <mowe_vpr/embedder.hpp>
 #include <mowe_vpr/retrieval.hpp>
@@ -599,6 +600,109 @@ bool Frontend::saveKeyframes(const Estimator& estimator, const std::string& path
   (void)estimator; (void)path;
   return false;
 #endif
+}
+
+bool Frontend::saveMowemap(const Estimator& estimator, const cameras::NCameraSystem& cameraSystem,
+                           const std::string& path, const std::string& configPath,
+                           const std::string& datasetPath) const {
+#ifdef OKVIS_USE_MOWE_XFEAT
+  if (!vprLoop_) {
+    return false;
+  }
+  const VprLoop& L = *vprLoop_;
+  mowe_map::Map map;
+  map.header.num_cameras = uint32_t(numCameras_);
+  map.header.vpr_dim = uint32_t(L.db.dim());
+  map.header.xfeat_engine_hash = mowe_map::hash_file(xfeatParams_.engine);
+  map.header.vpr_engine_hash = mowe_map::hash_file(vprParams_.engine);
+  map.header.vocabulary_hash = mowe_map::hash_file(vprParams_.vocabulary);
+  map.header.calibration_hash = calibrationHash(cameraSystem);
+  map.header.config_path = configPath;
+  map.header.dataset_path = datasetPath;
+  std::unordered_map<uint64_t, uint32_t> kfIndexOfState;
+  for (const auto& e : L.entries) {
+    const MultiFramePtr mf = estimator.multiFrame(StateId(e.stateId));
+    if (!mf) {
+      continue;  // multi-frame no longer held by the estimator
+    }
+    const kinematics::Transformation T_WS = estimator.pose(StateId(e.stateId));
+    const kinematics::Transformation T_SW = T_WS.inverse();
+    mowe_map::Keyframe kf;
+    kf.id = e.stateId;
+    kf.t_ns = mf->timestamp().toNSec();
+    kf.r_WS = T_WS.r();
+    kf.q_WS = T_WS.q();
+    kf.vpr = L.db.row(L.indexOfState.at(e.stateId));
+    kf.cameras.resize(numCameras_);
+    for (size_t im = 0; im < numCameras_; ++im) {
+      const size_t K = mf->numKeypoints(im);
+      kf.cameras[im].resize(K);
+      for (size_t k = 0; k < K; ++k) {
+        mowe_map::Keypoint& kp = kf.cameras[im][k];
+        cv::KeyPoint cvKp;
+        mf->getCvKeypoint(im, k, cvKp);
+        kp.x = cvKp.pt.x; kp.y = cvKp.pt.y; kp.size = cvKp.size; kp.response = cvKp.response;
+        std::memcpy(kp.descriptor.data(), mf->keypointDescriptor(im, k), sizeof(float) * size_t(kFloatDescriptorDim));
+        kp.landmark_id = mf->landmarkId(im, k);
+        Eigen::Vector4d hp_S(0, 0, 0, 0);
+        bool initialised = false;
+        mf->getLandmark(im, k, hp_S, initialised);
+        if (!initialised && kp.landmark_id != 0 && estimator.isLandmarkAdded(LandmarkId(kp.landmark_id))) {
+          MapPoint2 mp;  // still a live landmark in the real-time graph (same rule as keyframes.bin)
+          if (estimator.getLandmark(LandmarkId(kp.landmark_id), mp)) {
+            hp_S = T_SW * Eigen::Vector4d(mp.point);
+            initialised = mp.isInitialised;
+          }
+        }
+        kp.initialised = initialised ? 1 : 0;
+        kp.hp_S = hp_S;
+      }
+    }
+    kfIndexOfState[e.stateId] = uint32_t(map.keyframes.size());
+    map.keyframes.push_back(std::move(kf));
+  }
+  map.build_landmarks();
+  for (const auto& e : estimator.poseGraphEdges()) {
+    const auto i0 = kfIndexOfState.find(e.state0), i1 = kfIndexOfState.find(e.state1);
+    if (i0 == kfIndexOfState.end() || i1 == kfIndexOfState.end()) {
+      continue;  // edge to a state that is not a map keyframe
+    }
+    mowe_map::Edge edge;
+    edge.kf0 = i0->second;
+    edge.kf1 = i1->second;
+    edge.r = e.T_S0S1.r();
+    edge.q = e.T_S0S1.q();
+    // docs/design/mowemap-format.md §edge covariance: sigma_pos = 1/strength (1 m if
+    // rank-deficient), sigma_rot fixed 0.05 rad — the error term exposes nothing finer.
+    const double sp = e.strength > 1e-9 ? 1.0 / e.strength : 1.0, sr = 0.05;
+    edge.covariance = Eigen::Matrix<double, 6, 6>::Zero();
+    edge.covariance.diagonal() << sp * sp, sp * sp, sp * sp, sr * sr, sr * sr, sr * sr;
+    map.edges.push_back(edge);
+  }
+  const bool ok = map.save(path);
+  LOG(INFO) << (ok ? "mowemap written to " : "FAILED writing mowemap ") << path << ": "
+            << map.keyframes.size() << " of " << L.entries.size() << " keyframes, "
+            << map.landmarks.size() << " landmarks, " << map.edges.size() << " pose-graph edges";
+  return ok;
+#else
+  (void)estimator; (void)cameraSystem; (void)path; (void)configPath; (void)datasetPath;
+  return false;
+#endif
+}
+
+uint64_t Frontend::calibrationHash(const cameras::NCameraSystem& cameraSystem) {
+  // docs/design/mowemap-format.md: per camera T_SC (16 doubles), width, height, intrinsics.
+  std::vector<double> v;
+  for (size_t i = 0; i < cameraSystem.numCameras(); ++i) {
+    const Eigen::Matrix4d T = cameraSystem.T_SC(i)->T();
+    v.insert(v.end(), T.data(), T.data() + 16);
+    v.push_back(double(cameraSystem.cameraGeometry(i)->imageWidth()));
+    v.push_back(double(cameraSystem.cameraGeometry(i)->imageHeight()));
+    Eigen::VectorXd intr;
+    cameraSystem.cameraGeometry(i)->getIntrinsics(intr);
+    v.insert(v.end(), intr.data(), intr.data() + intr.size());
+  }
+  return mowe_map::fnv1a(v.data(), v.size() * sizeof(double));
 }
 
 bool Frontend::loadForeignKeyframes(const std::string& path,

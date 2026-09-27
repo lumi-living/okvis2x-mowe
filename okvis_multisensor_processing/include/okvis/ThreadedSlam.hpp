@@ -194,6 +194,10 @@ class ThreadedSlam : public ViInterface {
   okvis::Frontend& frontend() { return frontend_; }
   /// \brief Write the VPR keyframe database (T-0120 keyframes.bin); false if VPR is off.
   bool saveKeyframes(const std::string& path) const { return frontend_.saveKeyframes(estimator_, path); }
+  /// \brief T-0121: write the per-lawn .mowemap (false if VPR loop closure is off).
+  bool saveMowemap(const std::string& path, const std::string& configPath, const std::string& datasetPath) const {
+    return frontend_.saveMowemap(estimator_, parameters_.nCameraSystem, path, configPath, datasetPath);
+  }
 
   /// \brief Runs main processing iteration, call in your main loop.
   bool processFrame();

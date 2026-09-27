@@ -71,7 +71,7 @@ class FrameAbsolutePoseSacProblem : public AbsolutePoseSacProblem {
    * @warning Only okvis::absolute_pose::FrameNoncentralAbsoluteAdapter supported.
    */
   FrameAbsolutePoseSacProblem(adapter_t & adapter, algorithm_t algorithm)
-      : base_t(adapter, algorithm),
+      : base_t(adapter, algorithm, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<DERIVED_ADAPTER_T*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(
@@ -91,7 +91,7 @@ class FrameAbsolutePoseSacProblem : public AbsolutePoseSacProblem {
    */
   FrameAbsolutePoseSacProblem(adapter_t & adapter, algorithm_t algorithm,
                               const std::vector<int> & indices)
-      : base_t(adapter, algorithm, indices),
+      : base_t(adapter, algorithm, indices, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<DERIVED_ADAPTER_T*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(

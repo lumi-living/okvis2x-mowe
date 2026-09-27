@@ -66,7 +66,7 @@ class FrameRelativePoseSacProblem : public CentralRelativePoseSacProblem {
    * @warning Only okvis::relative_pose::FrameRelativeAdapter supported.
    */
   FrameRelativePoseSacProblem(adapter_t & adapter, algorithm_t algorithm)
-      : base_t(adapter, algorithm),
+      : base_t(adapter, algorithm, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<opengv::relative_pose::FrameRelativeAdapter*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(
@@ -85,7 +85,7 @@ class FrameRelativePoseSacProblem : public CentralRelativePoseSacProblem {
    */
   FrameRelativePoseSacProblem(adapter_t & adapter, algorithm_t algorithm,
                               const std::vector<int> & indices)
-      : base_t(adapter, algorithm, indices),
+      : base_t(adapter, algorithm, indices, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<opengv::relative_pose::FrameRelativeAdapter*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(

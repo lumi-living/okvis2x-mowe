@@ -62,7 +62,7 @@ class FrameRotationOnlySacProblem : public RotationOnlySacProblem {
    * @warning Only okvis::relative_pose::FrameRelativeAdapter supported.
    */
   FrameRotationOnlySacProblem(adapter_t & adapter)
-      : base_t(adapter),
+      : base_t(adapter, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<opengv::relative_pose::FrameRelativeAdapter*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(
@@ -80,7 +80,7 @@ class FrameRotationOnlySacProblem : public RotationOnlySacProblem {
    */
   FrameRotationOnlySacProblem(adapter_t & adapter,
                               const std::vector<int> & indices)
-      : base_t(adapter, indices),
+      : base_t(adapter, indices, false /* mow-e T-0127: RANSAC seed 12345, not time(0)+clock() -- reproducible replay */),
         adapterDerived_(
             *static_cast<opengv::relative_pose::FrameRelativeAdapter*>(&_adapter)) {
     OKVIS_ASSERT_TRUE(

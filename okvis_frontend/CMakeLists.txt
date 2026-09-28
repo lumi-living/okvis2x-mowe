@@ -106,6 +106,12 @@ if(BUILD_TESTS)
   target_compile_options(test_loop_closure_gates PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
   add_test(NAME test_loop_closure_gates COMMAND test_loop_closure_gates)
   install(TARGETS test_loop_closure_gates DESTINATION lib/${PROJECT_NAME})
+  # T-0128: KeypointGrid candidate bucketing for matchToMap (superset + identical scores).
+  add_executable(test_keypoint_grid test/test_keypoint_grid.cpp)
+  target_link_libraries(test_keypoint_grid ${LIB_NAME} gtest gtest_main pthread)
+  target_compile_options(test_keypoint_grid PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+  add_test(NAME test_keypoint_grid COMMAND test_keypoint_grid)
+  install(TARGETS test_keypoint_grid DESTINATION lib/${PROJECT_NAME})
 endif()
 
 # the DBoW2 pre-built vocabulary

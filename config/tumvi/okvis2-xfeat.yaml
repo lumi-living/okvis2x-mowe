@@ -84,7 +84,7 @@ frontend_parameters:
     absolute_threshold: 200.0 # (BRISK-only, ignored with xfeat.use)
     matching_threshold: 0.25 # COSINE distance (0..2). 0.25 -> ATE 0.055 m, 0.18 + 600 kps -> 0.072 m but 17 % faster (T-0113 runs 2/3)
     octaves: 0 # (BRISK-only, ignored with xfeat.use)
-    max_num_keypoints: 1024 # strongest-N cap on the engine top-1024 (no cap in effect; ~700 pass score_threshold)
+    max_num_keypoints: 384 # strongest-N of the engine top-1024. T-0128 - 384 = RTF 0.27 with ATE held (1024 ~700 kept -> RTF 0.09, 256 broke ATE)
     keyframe_overlap: 0.62 # minimum field-of-view overlap
     use_cnn: false # no CNN in this build (USE_NN=OFF)
     parallelise_detection: true # both camera threads call detectAndDescribe; the first runs the pair
@@ -108,7 +108,7 @@ estimator_parameters:
     do_final_ba: false # Whether to run a full final BA
     enforce_realtime: false # deterministic golden run, no time budget
     realtime_min_iterations: 3 # minimum number of iterations always performed
-    realtime_max_iterations: 10 # never do more than these, even if not converged
+    realtime_max_iterations: 3 # T-0128 - 10 -> 3 (1-thread solve is ~70 % of the frame at 10; ATE held on room1)
     realtime_time_limit: 0.035 # time budget for realtime optimisation [s]
     realtime_num_threads: 4 # number of threads for the realtime optimisation
     full_graph_iterations: 15 # don't do more than these for the full (background) optimisation

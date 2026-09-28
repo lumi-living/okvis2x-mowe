@@ -20,7 +20,9 @@
 #include <okvis/assert_macros.hpp>
 #include <okvis/timing/Timer.hpp>
 #include "ceres/covariance.h"
+#include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <chrono>
 #include <Eigen/SVD>
 #include <random>
@@ -2051,6 +2053,20 @@ void ViGraph::optimise(int maxIterations, int /*numThreads*/, bool verbose)
   // summary output
   if (verbose) {
     LOG(INFO) << summary_.FullReport();
+  }
+  // mow-e (T-0128): MOWE_CERES_STATS=N logs every N-th solve's size and time split.
+  static const int statsEvery = std::getenv("MOWE_CERES_STATS") ? std::atoi(std::getenv("MOWE_CERES_STATS")) : 0;
+  static std::atomic<int> solves{0};
+  if (statsEvery > 0 && ++solves % statsEvery == 0) {
+    LOG(INFO) << "ceres stats: res_blocks " << summary_.num_residual_blocks_reduced << "/"
+              << summary_.num_residual_blocks << " par_blocks " << summary_.num_parameter_blocks_reduced
+              << " effective_params " << summary_.num_effective_parameters_reduced
+              << " iters " << summary_.iterations.size() << " threads " << summary_.num_threads_used
+              << " total " << summary_.total_time_in_seconds << " pre " << summary_.preprocessor_time_in_seconds
+              << " jac " << summary_.jacobian_evaluation_time_in_seconds
+              << " res " << summary_.residual_evaluation_time_in_seconds
+              << " lin " << summary_.linear_solver_time_in_seconds
+              << " post " << summary_.postprocessor_time_in_seconds;
   }
 }
 

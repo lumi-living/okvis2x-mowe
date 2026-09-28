@@ -57,6 +57,7 @@
 
 #include <okvis/Frontend.hpp>
 #include <okvis/DescriptorDistance.hpp>
+#include <okvis/KeypointGrid.hpp>
 #include <okvis/LoopClosureGates.hpp>
 #include <cstring>
 #include <unordered_map>
@@ -2294,9 +2295,16 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     return 0;
   }
 
+  // mow-e (T-0128): per-stage timers (per call; the matching stages run once per camera).
+  TimerSwitchable tGet("2.01.0 map: get landmarks");
   // get all landmarks
   MapPoints pointMap;
   estimator.getLandmarks(pointMap);
+  tGet.stop();
+  TimerSwitchable tPrep("2.01.1 map: prepare landmarks", true);
+  TimerSwitchable t3d("2.01.2 map: match 3d", true);
+  TimerSwitchable tOpt("2.01.3 map: ransac+optimise", true);
+  TimerSwitchable tUninit("2.01.4 map: match uninitialised", true);
 
   // these may be needed for loop-closure map fusion
   std::vector<LandmarkId> oldIds, newIds;
@@ -2311,6 +2319,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   kinematics::Transformation T_WS1 = estimator.pose(StateId(currentFrameId));
   double reprErr = 0.0;
   for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
+    tPrep.start();
 
     // the current frame to match
     const MultiFramePtr multiFrame = estimator.multiFrame(StateId(currentFrameId));
@@ -2321,6 +2330,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
 
     const size_t numKeypoints = multiFrame->numKeypoints(im);
     if(numKeypoints == 0) {
+      tPrep.stop();
       continue; // no points -- bad!
     }
 
@@ -2486,6 +2496,8 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       landmarksToMatch[landmarkId] = landmarkToMatch;
     }
     landmarksToMatchVec[im] = landmarksToMatch;
+    tPrep.stop();
+    t3d.start();
 
     // multithreaded matching
     const size_t num_matching_threads = size_t(params.frontend.num_matching_threads);
@@ -2535,7 +2547,9 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
         ctr++;
       }
     }
+    t3d.stop();
   }
+  tOpt.start();
   //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "before ransac")
   reprErr /= double(params.frontend.num_matching_threads * params.nCameraSystem.numCameras());
 
@@ -2583,6 +2597,8 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     secondRansac = true;
   }
 
+  tOpt.stop();
+  tUninit.start();
   // now the non-initialised ones
   for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
     // the current frame to match
@@ -2695,6 +2711,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   }
   //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "after non-initialised match to map")
 
+  tUninit.stop();
   // merge landmarks, if loop-closure matching
   if(loopClosureLandmarksToUseExclusively) {
     estimator.mergeLandmarks(oldIds, newIds);
@@ -2762,6 +2779,13 @@ void Frontend::matchToMapByThread(
       continue; // already matched
     }
   }
+  // mow-e (T-0128): only the keypoints in the grid cells a landmark's gate disk overlaps
+  // are visited (KeypointGrid.hpp); the exact image-distance gate below is unchanged, so
+  // the matches equal the former full keypoint scan per landmark.
+  const KeypointGrid grid(keypoints, startK, endK, use,
+                          multiFrame->geometryAs<CAMERA_GEOMETRY>(im)->imageWidth(),
+                          multiFrame->geometryAs<CAMERA_GEOMETRY>(im)->imageHeight(),
+                          reprojectionThreshold);
   for(auto it = landmarksToMatch.begin(); it != landmarksToMatch.end(); ++it) {
 
     if(!it->second.is3d) {
@@ -2776,16 +2800,12 @@ void Frontend::matchToMapByThread(
 
     // match all present descriptors
     const Eigen::Vector2d projection = it->second.projection;
-    for(size_t k = startK; k < endK; k++) {
-
-      if(!use[k]) {
-        continue;
-      }
+    grid.forEachNear(projection, reprojectionThreshold, [&](size_t k) {
 
       // also check image distance, unless tracking lost.
       const Eigen::Vector2d reprDist = projection - keypoints.col(k);
       if (reprDist.dot(reprDist) > reprojectionThresholdSq) {
-        continue;
+        return;
       }
 
       const uchar* descriptorK = ddata + k*descBytes;
@@ -2800,7 +2820,7 @@ void Frontend::matchToMapByThread(
           reprErrors[threadIdx] += sqrt(reprDist.dot(reprDist));
         }
       }
-    }
+    });
   }
   reprErrors[threadIdx] /= double(ctrs[threadIdx]);
 }

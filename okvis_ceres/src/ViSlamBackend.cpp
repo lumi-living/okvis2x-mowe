@@ -913,7 +913,11 @@ void ViSlamBackend::optimiseRealtimeGraph(
 
   // run the optimiser
   realtimeGraph_.options_.linear_solver_type = ::ceres::DENSE_SCHUR;
-  realtimeGraph_.optimise(numIter, numThreads, verbose);
+  if (onlyNewestState && !verbose) {
+    realtimeGraph_.optimiseVariableSubproblem(numIter, numThreads);  // T-0128
+  } else {
+    realtimeGraph_.optimise(numIter, numThreads, verbose);
+  }
 
   // unfreeze if necessary
   if(onlyNewestState) {

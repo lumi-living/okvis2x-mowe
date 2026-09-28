@@ -766,6 +766,14 @@ class ViGraph
    */
   void optimise(int maxIterations, int numThreads, bool verbose);
 
+  /**
+   * @brief Like optimise(), but solves a temporary problem holding only the residual blocks
+   *        that touch a variable parameter block (program order kept). Same minimiser input
+   *        as Ceres' reduced program; skips the fixed_cost evaluation of every all-constant
+   *        residual (T-0128: ~7 ms per pose-only solve on the Orin Nano with ~9k residuals).
+   */
+  void optimiseVariableSubproblem(int maxIterations, int numThreads);
+
   /// \brief Set a limit for realtime-ish operation.
   /// \param timeLimit Maximum time allowed [s].
   /// \param minIterations Minimum iterations to be carried out irrespective of time limit.

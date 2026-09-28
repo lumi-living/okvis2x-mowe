@@ -21,6 +21,7 @@
 #include <okvis/timing/Timer.hpp>
 #include "ceres/covariance.h"
 #include <atomic>
+#include <unordered_set>
 #include <cmath>
 #include <cstdlib>
 #include <chrono>
@@ -2068,6 +2069,50 @@ void ViGraph::optimise(int maxIterations, int /*numThreads*/, bool verbose)
               << " lin " << summary_.linear_solver_time_in_seconds
               << " post " << summary_.postprocessor_time_in_seconds;
   }
+}
+
+void ViGraph::optimiseVariableSubproblem(int maxIterations, int numThreads)
+{
+  // mow-e (T-0128): see header. Variable blocks, then their residuals in program order.
+  std::vector<double*> parameterBlocks;
+  problem_->GetParameterBlocks(&parameterBlocks);
+  std::unordered_set<::ceres::ResidualBlockId> keep;
+  std::vector<::ceres::ResidualBlockId> touching;
+  for (double* block : parameterBlocks) {
+    if (problem_->IsParameterBlockConstant(block)) continue;
+    problem_->GetResidualBlocksForParameterBlock(block, &touching);
+    keep.insert(touching.begin(), touching.end());
+  }
+  std::vector<::ceres::ResidualBlockId> residualBlocks;
+  problem_->GetResidualBlocks(&residualBlocks);
+
+  ::ceres::Problem::Options problemOptions;
+  problemOptions.manifold_ownership = ::ceres::Ownership::DO_NOT_TAKE_OWNERSHIP;
+  problemOptions.loss_function_ownership = ::ceres::Ownership::DO_NOT_TAKE_OWNERSHIP;
+  problemOptions.cost_function_ownership = ::ceres::Ownership::DO_NOT_TAKE_OWNERSHIP;
+  ::ceres::Problem sub(problemOptions);
+  std::vector<double*> blocks;
+  for (::ceres::ResidualBlockId id : residualBlocks) {
+    if (!keep.count(id)) continue;
+    problem_->GetParameterBlocksForResidualBlock(id, &blocks);
+    for (double* block : blocks) {
+      if (sub.HasParameterBlock(block)) continue;
+      sub.AddParameterBlock(block, problem_->ParameterBlockSize(block),
+                            const_cast<::ceres::Manifold*>(problem_->GetManifold(block)));
+      if (problem_->IsParameterBlockConstant(block)) sub.SetParameterBlockConstant(block);
+    }
+    sub.AddResidualBlock(const_cast<::ceres::CostFunction*>(problem_->GetCostFunctionForResidualBlock(id)),
+                         const_cast<::ceres::LossFunction*>(problem_->GetLossFunctionForResidualBlock(id)),
+                         blocks);
+  }
+#ifdef USE_OPENMP
+  options_.num_threads = int(numThreads);
+#else
+  (void)numThreads;
+#endif
+  options_.max_num_iterations = int(maxIterations);
+  options_.minimizer_progress_to_stdout = false;
+  ::ceres::Solve(options_, &sub, &summary_);
 }
 
 bool ViGraph::setOptimisationTimeLimit(double timeLimit, int minIterations)

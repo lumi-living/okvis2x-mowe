@@ -2322,6 +2322,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   int ctr = 0;
   std::vector<cv::Mat> descriptorPool(params.nCameraSystem.numCameras());
   kinematics::Transformation T_WS1 = estimator.pose(StateId(currentFrameId));
+  std::unordered_map<uint64_t, kinematics::Transformation> T_WC_oldCache;  // T-0128
   double reprErr = 0.0;
   for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
     tPrep.start();
@@ -2417,11 +2418,18 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
         const KeypointIdentifier kid = *obsiter;
 
         // remove some descriptors that are unlikely to match
-        const kinematics::Transformation T_SC_old =
-            *multiFrame->T_SC(kid.cameraIndex);
-        const kinematics::Transformation T_WS_old =
-            estimator.pose(StateId(kid.frameId));
-        const kinematics::Transformation T_WC_old = T_WS_old * T_SC_old;
+        // mow-e (T-0128): T_WC_old memoised per (frame, camera) for this call — the same
+        // product as before, computed once instead of per observation and camera.
+        const uint64_t cacheKey = kid.frameId * 16 + kid.cameraIndex;
+        auto cached = T_WC_oldCache.find(cacheKey);
+        if (cached == T_WC_oldCache.end()) {
+          const kinematics::Transformation T_SC_old =
+              *multiFrame->T_SC(kid.cameraIndex);
+          const kinematics::Transformation T_WS_old =
+              estimator.pose(StateId(kid.frameId));
+          cached = T_WC_oldCache.emplace(cacheKey, T_WS_old * T_SC_old).first;
+        }
+        const kinematics::Transformation& T_WC_old = cached->second;
         const Eigen::Vector3d r_W_old = hp_W.head<3>()/hp_W[3] - T_WC_old.r();
 
         // check if 3D

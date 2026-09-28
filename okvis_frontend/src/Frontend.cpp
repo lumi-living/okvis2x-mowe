@@ -2284,6 +2284,11 @@ bool Frontend::doWeNeedANewKeyframe(const Estimator &estimator,
   }
 }
 
+// mow-e (T-0128): the pose-only (onlyNewestState) solves inside matchToMap free one
+// 15-parameter state; more Ceres threads only reorder the gradient/cost sums (run-to-run
+// differences in synchronous replay, mowe-nav-kb 08 T-0127 correction) and buy nothing.
+static constexpr int kNewestStateSolveThreads = 1;
+
 // Match a new multiframe to existing keyframes
 template <class CAMERA_GEOMETRY>
 int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params,
@@ -2583,13 +2588,13 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   std::vector<StateId> updatedStatesRealtime;
   if(!loopClosureLandmarksToUseExclusively && ctr > 3) {
     estimator.optimiseRealtimeGraph(
-        numInitIter, updatedStatesRealtime, params.estimator.realtime_num_threads,
+        numInitIter, updatedStatesRealtime, kNewestStateSolveThreads,
         false, true, isInitialized_);
     /*int numInliers = */removeOutliers<CAMERA_GEOMETRY>(estimator,
                                     params.nCameraSystem,
                                     estimator.multiFrame(StateId(currentFrameId)));
     estimator.optimiseRealtimeGraph(
-      2, updatedStatesRealtime, params.estimator.realtime_num_threads,
+      2, updatedStatesRealtime, kNewestStateSolveThreads,
       false, true, isInitialized_);
     T_WS1 = estimator.pose(StateId(currentFrameId));
   }
@@ -2727,7 +2732,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       numInitIter += 4;
     }
     estimator.optimiseRealtimeGraph(
-    numInitIter, updatedStatesRealtime, params.estimator.realtime_num_threads,
+    numInitIter, updatedStatesRealtime, kNewestStateSolveThreads,
         false, true, isInitialized_);
   }
   //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "after match to map")

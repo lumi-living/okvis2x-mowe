@@ -129,6 +129,7 @@ void ThreadedSlam::init()
   frontend_.setBriskDetectionAbsoluteThreshold(parameters_.frontend.absolute_threshold);
   frontend_.setBriskMatchingThreshold(parameters_.frontend.matching_threshold);
   frontend_.setBriskDetectionMaximumKeypoints(size_t(parameters_.frontend.max_num_keypoints));
+  frontend_.setDetector(parameters_.frontend.detector);  // T-0134: brisk | orb
   frontend_.setKeyframeInsertionOverlapThreshold(float(parameters_.frontend.keyframe_overlap));
   // XFeat/LighterGlue frontend (Mow-e, ADR-0040): after the BRISK setters, so
   // matching_threshold is already set and can be re-interpreted (cosine).

@@ -223,6 +223,13 @@ class Frontend : public ViFrontendInterface {
   /// @name Other setters
   /// @{
 
+  /// @brief Select the binary detector/extractor: "brisk" (default) or "orb"
+  ///        (T-0134, okvis/OrbFeatures.hpp). Throws on anything else.
+  void setDetector(const std::string& detector);
+
+  /// @brief True when cv::ORB replaces BRISK detect+describe (T-0134).
+  bool usingOrb() const { return orbDetector_; }
+
   /// @brief Set the matching threshold.
   void setBriskMatchingThreshold(double threshold) {
     briskMatchingThreshold_ = threshold;
@@ -452,6 +459,7 @@ private:
                                 const okvis::MultiFrame& frameB, size_t imB,
                                 std::vector<int>& matchBForA);
 
+  bool orbDetector_ = false; ///< T-0134: cv::ORB (32 B zero-padded to 48 B) instead of BRISK.
   bool floatDescriptors_ = false; ///< Descriptor metric: float/cosine (true) or BRISK/Hamming.
 
   mutable std::mutex statsMutex_; ///< Guards stats_ (detection threads + processing thread).

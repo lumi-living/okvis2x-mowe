@@ -164,6 +164,7 @@ struct FrontendParameters {
   bool use_cnn; ///< Use the CNN (if available) to filter out dynamic content / sky.
   bool parallelise_detection; ///< Run parallel detect & describe.
   int num_matching_threads; ///< Parallelise matching with this number of threads.
+  std::string detector = "brisk"; ///< Binary front-end: brisk | orb (Mow-e T-0134, optional key).
   XFeatParameters xfeat; ///< XFeat/LighterGlue frontend (Mow-e ADR-0040); off by default.
   VprLoopParameters vpr; ///< VPR loop closure (Mow-e T-0120); off unless vpr.engine is set.
 };

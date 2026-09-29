@@ -37,6 +37,8 @@
 #pragma GCC diagnostic pop
 #include <DBoW2/FBrisk.hpp>
 
+#include <okvis/OrbFeatures.hpp>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -1053,7 +1055,8 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
   }
 
   // hack: also initialise those maps for camera-aware extraction
-  for (size_t i = 0; i < numCameras_; ++i) {
+  // (BRISK only: ORB has no camera-aware / gravity-aligned extraction, T-0134)
+  for (size_t i = 0; i < numCameras_ && !orbDetector_; ++i) {
     if(!std::static_pointer_cast<cv::BriskDescriptorExtractor>(
          descriptorExtractors_.at(i))->isCameraAware()) {
       cv::Mat rays;
@@ -1074,7 +1077,7 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
   // ExtractionDirection == gravity direction in camera frame
   Eigen::Vector3d g_in_W(0, 0, -1);
   Eigen::Vector3d extractionDir = T_WC.inverse().C() * g_in_W;
-  std::static_pointer_cast<cv::BriskDescriptorExtractor>(descriptorExtractors_[cameraIndex])
+  if (!orbDetector_) std::static_pointer_cast<cv::BriskDescriptorExtractor>(descriptorExtractors_[cameraIndex])
       ->setExtractionDirection(
         cv::Vec3f(float(extractionDir[0]),float(extractionDir[1]),float(extractionDir[2])));
 
@@ -3837,6 +3840,14 @@ int Frontend::runRansac2d2d(Estimator &estimator, const okvis::ViParameters& par
 
 // (re)instantiates feature detectors and descriptor extractors. Used after settings changed or at
 // startup.
+void Frontend::setDetector(const std::string& detector) {
+  OKVIS_ASSERT_TRUE(Exception, detector == "brisk" || detector == "orb",
+                    "frontend_parameters.detector must be brisk or orb, got " << detector)
+  orbDetector_ = (detector == "orb");
+  LOG(INFO) << "binary front-end detector: " << detector;
+  initialiseBriskFeatureDetectors();
+}
+
 void Frontend::initialiseBriskFeatureDetectors() {
   for (auto it = featureDetectorMutexes_.begin(); it != featureDetectorMutexes_.end(); ++it) {
     (*it)->lock();
@@ -3845,6 +3856,13 @@ void Frontend::initialiseBriskFeatureDetectors() {
   featureDetectors_.clear();
   descriptorExtractors_.clear();
   for (size_t i = 0; i < numCameras_; ++i) {
+    if (orbDetector_) {  // T-0134: fastThreshold = detection_threshold, nfeatures = max keypoints
+      const int fast = int(std::lround(briskDetectionThreshold_));
+      const int maxKp = int(briskDetectionMaximumKeypoints_);
+      featureDetectors_.push_back(std::make_shared<OrbFeature2D>(maxKp, fast));
+      descriptorExtractors_.push_back(std::make_shared<OrbFeature2D>(maxKp, fast));
+      continue;
+    }
     featureDetectors_.push_back(std::shared_ptr<cv::FeatureDetector>(
         new brisk::ScaleSpaceFeatureDetector<brisk::HarrisScoreCalculator>(
             briskDetectionThreshold_, briskDetectionOctaves_,

@@ -313,6 +313,16 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
              viParameters_.frontend.parallelise_detection);
   parseEntry(file["frontend_parameters"], "num_matching_threads",
              viParameters_.frontend.num_matching_threads);
+  // Optional binary detector switch (Mow-e T-0134): brisk (default) | orb.
+  // A value OpenCV parses as a map (e.g. a trailing comment with ": ") must not
+  // silently fall back to BRISK.
+  const cv::FileNode detectorNode = file["frontend_parameters"]["detector"];
+  if (!detectorNode.empty()) {
+    OKVIS_ASSERT_TRUE(Exception, detectorNode.isString(),
+                      "frontend_parameters.detector must be a string (brisk | orb)")
+    std::string detector = std::string(detectorNode);
+    viParameters_.frontend.detector = detector.substr(0, detector.find_first_of(" \t"));
+  }
 
   // Optional XFeat/LighterGlue frontend block (Mow-e, ADR-0040). Absent block
   // == BRISK frontend; inside the block only the engine paths are optional.

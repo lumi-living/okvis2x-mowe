@@ -100,6 +100,12 @@ if(BUILD_TESTS)
   target_compile_options(test_float_matching PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
   add_test(NAME test_float_matching COMMAND test_float_matching)
   install(TARGETS test_float_matching DESTINATION lib/${PROJECT_NAME})
+  # T-0134: cv::ORB behind the BRISK seam (32 B zero-padded rows) + BRISK golden.
+  add_executable(test_orb_features test/test_orb_features.cpp)
+  target_link_libraries(test_orb_features ${LIB_NAME} gtest gtest_main pthread)
+  target_compile_options(test_orb_features PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+  add_test(NAME test_orb_features COMMAND test_orb_features)
+  install(TARGETS test_orb_features DESTINATION lib/${PROJECT_NAME})
   # T-0120: prior gate, temporal consistency, GP3P RANSAC with synthetic outliers.
   add_executable(test_loop_closure_gates test/test_loop_closure_gates.cpp)
   target_link_libraries(test_loop_closure_gates ${LIB_NAME} gtest gtest_main pthread)

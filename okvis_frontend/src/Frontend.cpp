@@ -301,8 +301,8 @@ void Frontend::setVprLoopParameters(const VprLoopParameters& vpr) {
     return;
   }
 #ifdef OKVIS_USE_MOWE_XFEAT
-  OKVIS_ASSERT_TRUE(Exception, floatDescriptors_,
-                    "frontend_parameters: vpr: needs the XFeat (float descriptor) frontend")
+  // T-0135: front-end agnostic — DINOv2 embeds the left image, so VPR retrieval
+  // also runs with BRISK (DBoW2 then stays off); only the build needs USE_MOWE_XFEAT.
   std::unique_ptr<VprLoop> loop(new VprLoop());
   OKVIS_ASSERT_TRUE(Exception, loop->embedder.load(vpr.engine),
                     "DINOv2 VPR engine failed to load: " << vpr.engine)
@@ -1292,7 +1292,9 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
   }
 
   // run 3d2d RANSAC (okvis/LoopClosureGates.hpp, T-0120: shared with the gtest).
-  // Threshold: upstream's 16 (~5 px) for BRISK; vpr.reproj_px on the VPR path.
+  // Threshold: upstream's 16 (~5 px) for BRISK; vpr.reproj_px on the XFeat VPR path.
+  // T-0135: BRISK + VPR keeps upstream's binary verification unchanged (Hamming
+  // brute force above, 16, ratio 0.7, distinctiveness check) — only retrieval differs.
   const double ransacThreshold = (floatDescriptors() && vprLoop_)
       ? loopclosure::ransacThresholdFromPixels(vprParams_.reproj_px, xfeatParams_.keypoint_size)
       : 16.0;
@@ -1800,12 +1802,14 @@ bool Frontend::dataAssociationAndInitialization(
   // rate; candidates pass the Mahalanobis prior gate, LighterGlue + GP3P RANSAC
   // (verifyRecognisedPlace) and temporal consistency before the UNCHANGED
   // attemptLoopClosure / addLoopClosureFrame / landmark-revival path below.
-  const bool vprMode = floatDescriptors();
+  // T-0135: VPR replaces DBoW2 whenever the vpr block is configured (BRISK or
+  // XFeat); the float path without it has no place recognition at all.
+  const bool vprMode = vprLoop_ != nullptr;
   bool vprQueried = false;
-  if (vprMode && vprLoop_ && *asKeyframe && !kfPrior) {
+  if (vprMode && *asKeyframe && !kfPrior) {
     vprEmbedCurrent(*framesInOut);
   }
-  if(params.estimator.do_loop_closures && (!vprMode || vprLoop_) && !estimator.isLoopClosing()
+  if(params.estimator.do_loop_closures && (vprMode || !floatDescriptors()) && !estimator.isLoopClosing()
       && !estimator.isLoopClosureAvailable()
       && !estimator.needsFullGraphOptimisation() && isInitialized_) {
     TimerSwitchable matchDBoWTimer("2.03 loop closure query");
@@ -1996,7 +2000,7 @@ bool Frontend::dataAssociationAndInitialization(
       dBow().poseIds.push_back(framesInOut->id());
     }
   }
-  if (vprMode && vprLoop_ && *asKeyframe && !kfPrior) {
+  if (vprMode && *asKeyframe && !kfPrior) {
     vprAddCurrent(estimator, *framesInOut);
   }
 

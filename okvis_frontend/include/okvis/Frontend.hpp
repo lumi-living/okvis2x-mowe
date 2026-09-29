@@ -300,7 +300,7 @@ class Frontend : public ViFrontendInterface {
   /// @name VPR loop closure (Mow-e T-0120, mowe-nav-kb 06 §adapter, ADR-0042)
   /// @{
 
-  /// \brief Enable VPR loop closure on the float-descriptor path: loads the DINOv2
+  /// \brief Enable VPR loop closure (BRISK or XFeat front-end; DBoW2 off, T-0135): loads the DINOv2
   ///        engine + VLAD vocabulary (vpr.engine empty = off). Throws when an engine
   ///        is configured but the build lacks USE_MOWE_XFEAT.
   void setVprLoopParameters(const VprLoopParameters& vpr);

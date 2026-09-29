@@ -93,7 +93,7 @@ frontend_parameters:
         use: true
         engine: /home/mowe/agent/engines/xfeat_512x512_k1024_trt10.3_sm87_fp16.plan
         score_threshold: 0.05 # keypointness x reliability floor (upstream default)
-        keypoint_size: 16.0 # [px] nominal size; obs sigma = size/f*0.125 in matching. T-0129: 8 -> RANSAC fail 0.98, ATE 0.116 m
+        keypoint_size: 10.0 # [px] obs sigma = size/8 px. T-0129 with one-to-one map matching, final ATE median 24 -> 0.076 m, 16 -> 0.051, 12 -> 0.047, 10 -> 0.041 (6 runs), 8 -> 0.041; without one-to-one 8 made RANSAC fail on 98 % of frames
         map_ratio: 0.95 # T-0129 matchToMap ratio test (L2, best vs 2nd other landmark). 1.0 = off: 2.61 px / ATE 0.035-0.061 m; 0.95: 2.49 px / 0.044-0.051 m; 0.9: 2.39 px but 0.070 m
         lighterglue_engine: /home/mowe/agent/engines/lighterglue_k512_trt10.3_sm87_fp16.plan
         match_score_min: 0.10 # LighterGlue confidence floor

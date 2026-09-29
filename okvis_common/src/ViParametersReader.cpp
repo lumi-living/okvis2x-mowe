@@ -334,6 +334,9 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
     }
     parseEntry(xfeatNode, "score_threshold", xfeat.score_threshold);
     parseEntry(xfeatNode, "keypoint_size", xfeat.keypoint_size);
+    if (xfeatNode["map_ratio"].isReal()) {  // T-0129, optional
+      xfeat.map_ratio = double(xfeatNode["map_ratio"]);
+    }
     parseEntry(xfeatNode, "match_score_min", xfeat.match_score_min);
     parseEntry(xfeatNode, "motion_stereo_top_n", xfeat.motion_stereo_top_n);
     parseEntry(xfeatNode, "stereo_min_nn_matches", xfeat.stereo_min_nn_matches);

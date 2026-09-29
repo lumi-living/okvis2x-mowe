@@ -13,6 +13,7 @@
  */
 #include "okvis/xfeat/XFeatFrontend.hpp"
 
+#include <cstdlib>
 #include <iostream>
 
 #include "mowe_camera/frame.hpp"
@@ -136,6 +137,9 @@ struct XFeatFrontend::Impl {
       std::cerr << "[xfeat] CUDA error: " << cudaGetErrorString(cudaGetLastError()) << "\n";
       return false;
     }
+    // T-0129 diagnosis: MOWE_XFEAT_NO_OFFSETS=1 drops the sub-pixel refinement (integer peaks).
+    static const bool no_offsets = std::getenv("MOWE_XFEAT_NO_OFFSETS") != nullptr;
+    const bool use_offsets = o.offsets && !no_offsets;
     for (std::uint32_t b = 0; b < B; ++b) {
       if (!slots[b].used) continue;
       const ResizeScale scale = resize_scale(slots[b].w, slots[b].h,
@@ -143,7 +147,7 @@ struct XFeatFrontend::Impl {
       assemble_stream(&h_keypoints[std::size_t(b) * K * 2], &h_scores[std::size_t(b) * K],
                       &h_descriptors[std::size_t(b) * K * kDescriptorDim], K, scale,
                       cfg.score_threshold, out[b],
-                      o.offsets ? &h_offsets[std::size_t(b) * K * 2] : nullptr);
+                      use_offsets ? &h_offsets[std::size_t(b) * K * 2] : nullptr);
       slots[b].used = false;
     }
     return true;

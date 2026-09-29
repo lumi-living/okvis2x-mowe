@@ -58,6 +58,7 @@
 #include <okvis/Frontend.hpp>
 #include <okvis/DescriptorDistance.hpp>
 #include <okvis/KeypointGrid.hpp>
+#include <okvis/MapMatchOneToOne.hpp>
 #include <okvis/LoopClosureGates.hpp>
 #include <cstring>
 #include <unordered_map>
@@ -1102,6 +1103,11 @@ bool Frontend::writeStatsJson(const std::string& path) const {
   const double mean = ms.empty() ? 0.0
       : std::accumulate(ms.begin(), ms.end(), 0.0) / double(ms.size());
   auto ratio = [](uint64_t a, uint64_t b) { return b ? double(a) / double(b) : 0.0; };
+  auto median = [](std::vector<double> v) {  // -1 = RANSAC never ran
+    if (v.empty()) return -1.0;
+    std::nth_element(v.begin(), v.begin() + long(v.size() / 2), v.end());
+    return v[v.size() / 2];
+  };
   std::ofstream f(path);
   if (!f.good()) {
     LOG(ERROR) << "cannot write frontend stats to " << path;
@@ -1124,7 +1130,20 @@ bool Frontend::writeStatsJson(const std::string& path) const {
     << "  \"stereo_lighterglue_fallbacks\": " << s.stereoLgFallbacks << ",\n"
     << "  \"keyframe_match_calls\": " << s.keyframeCalls << ",\n"
     << "  \"mean_keyframe_matches\": " << ratio(s.keyframeMatches, s.keyframeCalls) << ",\n"
-    << "  \"loop_closures\": " << s.loopClosures << "\n"
+    << "  \"loop_closures\": " << s.loopClosures << ",\n"
+    // T-0129 map-matching quality (see Stats)
+    << "  \"map_frames\": " << s.mapFrames << ",\n"
+    << "  \"mean_map_reproj_px\": " << (s.mapReprN ? s.mapReprSum / double(s.mapReprN) : 0.0) << ",\n"
+    << "  \"mean_map_reproj_legacy_px\": " << (s.mapReprLegacyN ? s.mapReprLegacySum / double(s.mapReprLegacyN) : 0.0) << ",\n"
+    << "  \"mean_map_match_px\": " << (s.mapMatchPxN ? s.mapMatchPxSum / double(s.mapMatchPxN) : 0.0) << ",\n"
+    << "  \"map_one_to_one\": " << ((floatDescriptors_ && mapOneToOne_) ? 1 : 0) << ",\n"
+    << "  \"map_duplicates_dropped_per_frame\": " << ratio(s.mapDuplicatesDropped, s.mapFrames) << ",\n"
+    << "  \"map_ratio\": " << xfeatParams_.map_ratio << ",\n"
+    << "  \"map_ratio_rejected_per_frame\": " << ratio(s.mapRatioRejected, s.mapFrames) << ",\n"
+    << "  \"ransac_frames\": " << s.ransacFrames << ",\n"
+    << "  \"ransac_fail_frames\": " << s.ransacFailFrames << ",\n"
+    << "  \"ransac_fail_frames_ratio\": " << ratio(s.ransacFailFrames, s.mapFrames) << ",\n"
+    << "  \"inlier_ratio_p50\": " << median(s.inlierRatios) << "\n"
     << "}\n";
   LOG(INFO) << "frontend stats written to " << path;
   return true;
@@ -2324,6 +2343,8 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   kinematics::Transformation T_WS1 = estimator.pose(StateId(currentFrameId));
   std::unordered_map<uint64_t, kinematics::Transformation> T_WC_oldCache;  // T-0128
   double reprErr = 0.0;
+  double matchPxSum = 0.0;  // T-0129: accepted 3D matches, |projection - keypoint| [px]
+  size_t matchPxN = 0, duplicatesDropped = 0, ratioRejected = 0;
   for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
     tPrep.start();
 
@@ -2516,6 +2537,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     const size_t num_matching_threads = size_t(params.frontend.num_matching_threads);
 
     std::vector<double> distances(numKeypoints,briskMatchingThreshold_);
+    std::vector<double> secondDistances(numKeypoints, std::numeric_limits<double>::max());
     std::vector<LandmarkId> lmIds(numKeypoints);
     AlignedVector<Eigen::Vector4d> hps_W(numKeypoints, Eigen::Vector4d::Zero());
     std::vector<size_t> ctrs(num_matching_threads);
@@ -2529,13 +2551,29 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
               loopClosureLandmarksToUseExclusively, std::cref(T_WS1),
               std::cref(landmarksToMatch), numKeypoints,
               std::cref(pointMap), im, std::cref(multiFrame), std::ref(distances),
-              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs), std::ref(reprErrors));
+              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs), std::ref(reprErrors),
+              std::ref(secondDistances));
     }
 
     for(size_t t = 0; t<num_matching_threads; ++t) {
       threads[t]->join();
       delete threads[t];
       reprErr += reprErrors[t];
+    }
+
+    // mow-e (T-0129): one keypoint per landmark on the float path (MapMatchOneToOne.hpp),
+    // after the optional ratio test against the second-best other landmark in the gate.
+    if (floatDescriptors_ && mapOneToOne_) {
+      ratioRejected += rejectAmbiguousMatches(lmIds, distances, secondDistances,
+                                              xfeatParams_.map_ratio);
+      duplicatesDropped += keepBestKeypointPerLandmark(lmIds, distances);
+    }
+    for (size_t k = 0; k < numKeypoints; ++k) {
+      if (!lmIds[k].isInitialised()) continue;
+      Eigen::Vector2d keypoint;
+      multiFrame->getKeypoint(im, k, keypoint);
+      matchPxSum += (landmarksToMatch.at(lmIds[k]).projection - keypoint).norm();
+      ++matchPxN;
     }
 
     // now insert observations
@@ -2565,6 +2603,12 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
   tOpt.start();
   //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "before ransac")
   reprErr /= double(params.frontend.num_matching_threads * params.nCameraSystem.numCameras());
+  const double legacyReprErr = reprErr;
+  // T-0129: on the one-to-one float path the decision uses the accepted matches; the
+  // upstream value also averages every intermediate best-so-far candidate in the gate.
+  if (floatDescriptors_ && mapOneToOne_ && matchPxN > 0) {
+    reprErr = matchPxSum / double(matchPxN);
+  }
 
   // remove outliers -- initialise pose only without IMU or when matching with large repr. err.
   MultiFramePtr multiFrame = estimator.multiFrame(StateId(currentFrameId));
@@ -2582,13 +2626,42 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     numInitIter += 2;
   }
   bool secondRansac = false;
+  double inlierRatio = -1.0;
+  bool ransacFailed = false;
   if(runRansac) {
     const bool ransacSuccess = runRansac3d2d(estimator, multiFrame->cameraSystem(), multiFrame,
-                                             runRansac, ransacRemoveOutliers);
+                                             runRansac, ransacRemoveOutliers, &inlierRatio);
     T_WS1 = estimator.pose(StateId(currentFrameId));
     if (!ransacSuccess) {
       numInitIter += 4;
       secondRansac = true;
+      ransacFailed = true;
+    }
+  }
+  // T-0129 diagnosis: MOWE_RANSAC_PROBE=1 measures the inlier ratio on frames that did not
+  // trigger RANSAC too (no pose set, no outliers removed), so ransac_fail_frames_ratio is not
+  // trivially 0 just because the reprojection gate stopped firing.
+  static const bool ransacProbe = std::getenv("MOWE_RANSAC_PROBE") != nullptr;
+  bool probed = false;
+  if (!runRansac && ransacProbe && !loopClosureLandmarksToUseExclusively) {
+    probed = true;
+    ransacFailed = !runRansac3d2d(estimator, multiFrame->cameraSystem(), multiFrame,
+                                  false, false, &inlierRatio);
+  }
+  if (matchPxN > 0 && !loopClosureLandmarksToUseExclusively) {  // T-0129 stats
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    ++stats_.mapFrames;
+    // upstream's per-thread mean is 0/0 = NaN when a thread matched nothing (BRISK)
+    if (std::isfinite(reprErr)) { stats_.mapReprSum += reprErr; ++stats_.mapReprN; }
+    if (std::isfinite(legacyReprErr)) { stats_.mapReprLegacySum += legacyReprErr; ++stats_.mapReprLegacyN; }
+    stats_.mapMatchPxSum += matchPxSum;
+    stats_.mapMatchPxN += matchPxN;
+    stats_.mapDuplicatesDropped += duplicatesDropped;
+    stats_.mapRatioRejected += ratioRejected;
+    if (runRansac || probed) {
+      ++stats_.ransacFrames;
+      stats_.ransacFailFrames += ransacFailed ? 1 : 0;
+      if (inlierRatio >= 0.0) stats_.inlierRatios.push_back(inlierRatio);
     }
   }
 
@@ -2760,7 +2833,8 @@ void Frontend::matchToMapByThread(
     size_t im, const MultiFramePtr&  multiFrame, std::vector<double>& distances,
     std::vector<LandmarkId>& lmIds, AlignedVector<Eigen::Vector4d>& hps_W,
     std::vector<size_t>& ctrs,
-    std::vector<double>& reprErrors) const {
+    std::vector<double>& reprErrors,
+    std::vector<double>& secondDistances) const {
 
   const kinematics::Transformation T_SC = *multiFrame->T_SC(im);
   const kinematics::Transformation T_WC1 = T_WS1 * T_SC;
@@ -2826,6 +2900,16 @@ void Frontend::matchToMapByThread(
         const double dist = descriptorDist(
             descriptorK,
             it->second.descriptors.data + d*descBytes);
+        // T-0129: best distance of any *other* landmark in the gate (ratio test)
+        if (lmIds[k] != it->first) {
+          if (dist < distances[k]) {
+            if (lmIds[k].isInitialised()) {
+              secondDistances[k] = std::min(secondDistances[k], distances[k]);
+            }
+          } else {
+            secondDistances[k] = std::min(secondDistances[k], dist);
+          }
+        }
         if(dist < distances[k]) {
           distances[k] = dist;
           lmIds[k] = it->first;
@@ -3538,7 +3622,8 @@ int Frontend::removeOutliers(Estimator &estimator,
 // Perform 3D/2D RANSAC.
 bool Frontend::runRansac3d2d(
     Estimator &estimator, const okvis::cameras::NCameraSystem& nCameraSystem,
-    std::shared_ptr<okvis::MultiFrame> currentFrame, bool initializePose, bool removeOutliers) {
+    std::shared_ptr<okvis::MultiFrame> currentFrame, bool initializePose, bool removeOutliers,
+    double* inlierRatio) {
   if (estimator.numFrames() < 2) {
     // nothing to match against, we are just starting up.
     return false;
@@ -3571,6 +3656,7 @@ bool Frontend::runRansac3d2d(
 
   // deal with outliers and assign transformation
   numInliers = int(ransac.inliers_.size());
+  if (inlierRatio) *inlierRatio = double(numInliers) / double(numCorrespondences);
   if (numInliers >= 10 && double(ransac.inliers_.size())/double(numCorrespondences)>0.7) {
     // kick out outliers:
     if(removeOutliers) {

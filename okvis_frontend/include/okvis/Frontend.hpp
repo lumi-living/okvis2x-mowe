@@ -20,6 +20,7 @@
 #ifndef INCLUDE_OKVIS_FRONTEND_HPP_
 #define INCLUDE_OKVIS_FRONTEND_HPP_
 
+#include <cstdlib>
 #include <mutex>
 
 #include <okvis/Component.hpp>
@@ -273,6 +274,21 @@ class Frontend : public ViFrontendInterface {
     uint64_t keyframeMatches = 0;   ///< 3d2d matches to the map (matchToMap)
     uint64_t keyframeCalls = 0;     ///< matchToMap calls (every frame after the first)
     uint64_t loopClosures = 0;      ///< accepted loop closures
+    // T-0129: map-matching quality. mapReprSum/mapFrames = mean of the value matchToMap
+    // compares against strictReprThreshold ("large reprojection error"); mapMatchPx* =
+    // IMU-predicted projection vs keypoint over the accepted 3D matches only.
+    uint64_t mapFrames = 0;         ///< matchToMap calls with >= 1 3D match
+    double mapReprSum = 0.0;        ///< sum of the per-frame decision reprojection error [px]
+    double mapReprLegacySum = 0.0;  ///< same, upstream per-candidate-improvement definition [px]
+    double mapMatchPxSum = 0.0;     ///< sum over accepted 3D matches of |projection - keypoint| [px]
+    uint64_t mapMatchPxN = 0;       ///< accepted 3D matches counted in mapMatchPxSum
+    uint64_t mapDuplicatesDropped = 0; ///< keypoints dropped by the one-to-one landmark rule
+    uint64_t mapRatioRejected = 0;  ///< keypoints dropped by the xfeat.map_ratio test
+    uint64_t mapReprN = 0;          ///< frames with a finite mapReprSum term
+    uint64_t mapReprLegacyN = 0;    ///< frames with a finite mapReprLegacySum term
+    uint64_t ransacFrames = 0;      ///< frames where matchToMap ran the first 3D-2D RANSAC (or the MOWE_RANSAC_PROBE probe)
+    uint64_t ransacFailFrames = 0;  ///< ... and it failed (inlier ratio <= 0.7 or < 10 inliers)
+    std::vector<double> inlierRatios; ///< first-RANSAC inlier ratio per frame where it ran
   };
   /// \brief Snapshot of the statistics.
   Stats stats() const;
@@ -440,6 +456,10 @@ private:
 
   mutable std::mutex statsMutex_; ///< Guards stats_ (detection threads + processing thread).
   Stats stats_;                   ///< Accumulated front-end statistics (T-0113).
+  /// T-0129: float path — each landmark keeps only its best-descriptor keypoint per camera
+  /// in matchToMap (XFeat's 1/8-res descriptor map makes neighbouring keypoints near
+  /// duplicates). MOWE_MAP_MANY_TO_ONE=1 restores the upstream rule (diagnosis only).
+  bool mapOneToOne_ = std::getenv("MOWE_MAP_MANY_TO_ONE") == nullptr;
 
   ///@}
 
@@ -545,7 +565,8 @@ private:
                     const okvis::cameras::NCameraSystem &nCameraSystem,
                     std::shared_ptr<okvis::MultiFrame> currentFrame,
                     bool initializePose,
-                    bool removeOutliers);
+                    bool removeOutliers,
+                    double* inlierRatio = nullptr);
   /**
    * @brief Remove outliers on current frame.
    * @warning As this function uses the estimator it is not threadsafe.
@@ -632,6 +653,7 @@ private:
    * @param[out] hps_W matched landmarks (homogeneous) positions.
    * @param[out] ctrs Number of matches (by im).
    * @param[out] reprErrs Reprojection errors (by im).
+   * @param[out] secondDistances Per keypoint: best distance to another landmark in the gate (T-0129).
    */
   template<class CAMERA_GEOMETRY>
   void matchToMapByThread(
@@ -644,7 +666,7 @@ private:
       const MapPoints& pointMap, size_t im, const MultiFramePtr&  multiFrame,
       std::vector<double>& distances, std::vector<LandmarkId>& lmIds,
       AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs,
-      std::vector<double>& reprErrs) const;
+      std::vector<double>& reprErrs, std::vector<double>& secondDistances) const;
 
   /**
    * @brief Parallelisable sub-part of matchToMap -- unitialised points.

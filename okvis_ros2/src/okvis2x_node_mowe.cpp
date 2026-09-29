@@ -26,6 +26,10 @@
  *  - `shutdown` service (std_srvs/SetBool) as in okvis2x_node, final BA
  *    (if configured) and the final trajectory CSV in `csv_path`.
  *  - GNSS in via /gnss/enu (T-0117), wheel odometry in via /wheel/speeds (T-0125).
+ *  - T-0501: `camera_type: topics` subscribes cam0/image_raw + cam1/image_raw
+ *    (mono8, sensor QoS) instead of owning a camera, pairs them on identical
+ *    stamps and feeds addImages — the dataset-replay path (tumvi_player.py),
+ *    everything downstream of addImages identical to the direct path.
  */
 #include <algorithm>
 #include <atomic>
@@ -37,6 +41,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -53,6 +58,7 @@
 #include <lifecycle_msgs/msg/transition.hpp>
 #include <lifecycle_msgs/srv/change_state.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>        // T-0501 camera_type: topics
 #include <sensor_msgs/msg/imu.hpp>
 #include <mowe_msgs/msg/gnss_alignment_status.hpp>
 #include <mowe_msgs/msg/estimator_state.hpp>         // T-0124
@@ -394,6 +400,76 @@ int main(int argc, char **argv) {
           if (estimator.addWheelMeasurement(timestamp, msg.v_left, msg.v_right, msg.b_eff, int(msg.slip_flag)))
             ++g_stats.wheelIngested;
         });
+  }
+
+  // T-0501: dataset replay over topics. Stereo pairs are matched on identical
+  // header stamps (the player stamps both eyes from one dataset row).
+  std::string cameraType;
+  node->get_parameter("camera_type", cameraType);
+  if (cameraType == "topics") {
+    std::mutex pairMutex;
+    std::map<uint64_t, cv::Mat> pending[2];
+    auto onImage = [&](const sensor_msgs::msg::Image &msg, size_t camIdx) {
+      if (msg.encoding != "mono8") {
+        LOG_EVERY_N(WARNING, 100) << "camera_type topics wants mono8, got " << msg.encoding;
+        return;
+      }
+      if (camIdx == 0) ++g_stats.framesCaptured;  // stereo pairs, like the camera path's bundles
+      const okvis::Time t(msg.header.stamp.sec, msg.header.stamp.nanosec);
+      cv::Mat img = cv::Mat(int(msg.height), int(msg.width), CV_8UC1,
+                            const_cast<uint8_t *>(msg.data.data()), msg.step).clone();
+      std::lock_guard<std::mutex> lock(pairMutex);
+      auto &other = pending[1 - camIdx];
+      auto it = other.find(t.toNSec());
+      if (it == other.end()) {
+        pending[camIdx][t.toNSec()] = img;
+        // ponytail: an eye never matched by its partner is dropped after 10 newer frames
+        while (pending[camIdx].size() > 10) {
+          pending[camIdx].erase(pending[camIdx].begin());
+          ++g_stats.framesUnpaired;
+        }
+        return;
+      }
+      std::map<size_t, cv::Mat> images{{camIdx, img}, {1 - camIdx, it->second}};
+      other.erase(other.begin(), std::next(it));
+      if (estimator.addImages(t, images)) ++g_stats.framesIngested;
+      else ++g_stats.framesDropped;
+    };
+    auto cam0Sub = node->create_subscription<sensor_msgs::msg::Image>(
+        "cam0/image_raw", rclcpp::SensorDataQoS().keep_last(20),
+        [&](const sensor_msgs::msg::Image &m) { onImage(m, 0); });
+    auto cam1Sub = node->create_subscription<sensor_msgs::msg::Image>(
+        "cam1/image_raw", rclcpp::SensorDataQoS().keep_last(20),
+        [&](const sensor_msgs::msg::Image &m) { onImage(m, 1); });
+    shtdown = false;
+    signal(SIGINT, [](int) { shtdown = true; });
+    signal(SIGTERM, [](int) { shtdown = true; });
+    threadedOdometryPublisher->startThread();
+    threadedImagePublisher->startThread();
+    threadedPublisher->startThread();
+    LOG(INFO) << "camera_type topics: waiting for cam0/image_raw + cam1/image_raw";
+    // Main loop as in the camera path below, without the capture thread (the
+    // image callbacks run inside spin_some).
+    auto nextRss = std::chrono::steady_clock::now();
+    const auto warmAt = nextRss + std::chrono::seconds(10);
+    while (!shtdown && rclcpp::ok()) {
+      rclcpp::spin_some(node);
+      if (!estimator.processFrame()) std::this_thread::sleep_for(std::chrono::microseconds(500));
+      if (std::chrono::steady_clock::now() >= nextRss) {
+        sampleRss();
+        if (g_stats.rssWarmMb == 0 && nextRss >= warmAt) {
+          g_stats.rssWarmMb = g_stats.rssEndMb;
+          g_stats.tWarm = std::chrono::steady_clock::now();
+        }
+        nextRss += std::chrono::seconds(1);
+        writeStats();  // T-0501: live counters (odom_published) for the full-stack checker's loss ratio
+      }
+    }
+    estimator.stopThreading();
+    g_stats.cleanExit = 1;
+    writeStats();
+    rclcpp::shutdown();
+    return EXIT_SUCCESS;
   }
 
   // Camera in directly via mowe_camera_core (no ROS on the image path).

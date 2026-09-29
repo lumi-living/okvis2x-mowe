@@ -80,8 +80,8 @@ class ThreadedPublisher {
      * @param notifyCallback Function to notify when a new message is available.
      */
     PublisherTyped(std::string name, rclcpp::Node::SharedPtr node,
-                   std::function<void()> notifyCallback)
-        : node_(node),
+                   std::function<void()> notifyCallback, size_t queueDepth = 1)
+        : node_(node), queueDepth_(queueDepth),
           queue_(std::make_shared<
                  okvis::threadsafe::Queue<std::shared_ptr<MessageType>>>()),
           notifyCallback_(notifyCallback),
@@ -94,7 +94,7 @@ class ThreadedPublisher {
             imageTransport_->advertise(name, 1));
       } else {
         // Standard ROS2 publisher
-        publisher_ = node_->create_publisher<MessageType>(name, 1);
+        publisher_ = node_->create_publisher<MessageType>(name, queueDepth_);
       }
     }
 
@@ -106,7 +106,7 @@ class ThreadedPublisher {
      * @param msg Shared pointer to the new message.
      */
     void setLatestMessage(std::shared_ptr<MessageType> msg) {
-      queue_->PushNonBlockingDroppingIfFull(msg, 1);
+      queue_->PushNonBlockingDroppingIfFull(msg, queueDepth_);
 
       if (notifyCallback_) {
         notifyCallback_();
@@ -118,11 +118,9 @@ class ThreadedPublisher {
      */
     void publishLatest() override {
       std::shared_ptr<MessageType> msg = nullptr;
-
-      if (!queue_->PopNonBlocking(&msg)) {
-        return;
-      }
-
+      // mow-e T-0501: drain everything queued (queueDepth_ > 1 = every sample, e.g. the 200 Hz odometry
+      // that drives odom → base_link); depth 1 keeps upstream's latest-only behaviour.
+      while (queue_->PopNonBlocking(&msg)) {
       try {
         if constexpr (std::is_same_v<MessageType, sensor_msgs::msg::Image>) {
           imagePublisher_->publish(msg);
@@ -131,6 +129,7 @@ class ThreadedPublisher {
         }
       } catch (const std::exception &e) {
         LOG(WARNING) << "Error publishing message: to topic " << name_ << ". Error message is: " << e.what();
+      }
       }
     }
 
@@ -148,6 +147,7 @@ class ThreadedPublisher {
     
   private:
     rclcpp::Node::SharedPtr node_;
+    size_t queueDepth_ = 1; ///< mow-e T-0501: > 1 publishes every sample instead of the latest
     std::shared_ptr<okvis::threadsafe::Queue<std::shared_ptr<MessageType>>>
         queue_;
     std::function<void()> notifyCallback_;
@@ -200,9 +200,10 @@ public:
   registerPublisher(const std::string name,
                     std::function<std::shared_ptr<MessageType>(
                         std::shared_ptr<PreprocParamType>)>
-                        preprocessingFunction = nullptr) {
+                        preprocessingFunction = nullptr,
+                    size_t queueDepth = 1) {
     auto newPub = std::make_shared<PublisherTyped<MessageType>>(
-        name, node_, [this]() { this->notifyDataAvailable(); });
+        name, node_, [this]() { this->notifyDataAvailable(); }, queueDepth);
     publishers_.push_back(newPub);
 
     if constexpr (!std::is_same_v<MessageType, PreprocParamType>) {
@@ -261,12 +262,15 @@ private:
       {
         std::unique_lock lock(wakeMtx_);
         cv_.wait(lock, [this] { return dataAvailableToPublish_ || !running_; });
+        // mow-e T-0501: clear BEFORE draining. Upstream cleared after, so a message pushed while
+        // publishLatest() ran lost its wake-up and was overwritten in the 1-deep queue (4 % of
+        // /okvis_odometry on the Orin Nano).
+        dataAvailableToPublish_ = false;
       }
 
       for (auto &pub : publishers_) {
         pub->publishLatest();
       }
-      dataAvailableToPublish_ = false;
     }
   }
 

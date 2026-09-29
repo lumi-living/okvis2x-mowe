@@ -55,7 +55,8 @@ void Publisher::setupNode(std::shared_ptr<rclcpp::Node> node)
 
   // set up publishers
   slice_pub_ =              threadedPublisher_->registerPublisher<visualization_msgs::msg::Marker>("se_map_slice");
-  pubObometry_ =            threadedOdometryPublisher_->registerPublisher<nav_msgs::msg::Odometry>("okvis_odometry");
+  // mow-e T-0501: every propagated sample (odom → base_link at 200 Hz, ADR-0042 §(4)), not latest-only; 400 = 2 s
+  pubObometry_ =            threadedOdometryPublisher_->registerPublisher<nav_msgs::msg::Odometry, nav_msgs::msg::Odometry>("okvis_odometry", nullptr, 400);
   pubPath_ =                threadedPublisher_->registerPublisher<visualization_msgs::msg::Marker>("okvis_path");
   pubTransform_ =           threadedPublisher_->registerPublisher<geometry_msgs::msg::TransformStamped>("okvis_transform");
   pubMesh_ =                threadedPublisher_->registerPublisher<visualization_msgs::msg::Marker>("okvis_mesh");

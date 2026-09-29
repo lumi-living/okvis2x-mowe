@@ -115,6 +115,7 @@ if(BUILD_TESTS)
     test/TestGpsError.cpp
     test/TestGpsMerge.cpp # mow-e (T-0117): GNSS factors survive eliminateStateByImuMerge
     test/TestWheelOdometryError.cpp # mow-e (T-0125): wheel factor Jacobians, gating, merge
+    test/TestDeterministicRemoval.cpp # mow-e (T-0131): Ceres fast removal in program order, not by address
     test/TestHomogeneousPointError.cpp
     test/TestImuError.cpp
     test/TestPoseError.cpp

@@ -399,6 +399,10 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
              viParameters_.estimator.full_graph_iterations);
   parseEntry(file["estimator_parameters"], "full_graph_num_threads",
              viParameters_.estimator.full_graph_num_threads);
+  if (file["estimator_parameters"]["full_graph_join_frames"].isInt()) {  // T-0131, optional
+    viParameters_.estimator.full_graph_join_frames =
+        int(file["estimator_parameters"]["full_graph_join_frames"]);
+  }
   parseEntry(file["estimator_parameters"], "p_dbow",
              viParameters_.estimator.p_dbow);
   parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",

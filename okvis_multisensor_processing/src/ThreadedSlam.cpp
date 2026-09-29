@@ -28,7 +28,10 @@
 #include <glog/logging.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <mutex>
+#include <sstream>
 #include <iomanip>
 #include <okvis/ThreadedSlam.hpp>
 #include <okvis/assert_macros.hpp>
@@ -46,6 +49,52 @@ static const int cameraInputQueueSize = 2;
 
 // overlap of imu data before and after two consecutive frames [seconds]:
 static const double imuTemporalOverlap = 0.02;
+
+// mow-e (T-0131, mowe-nav-kb 08): MOWE_DET_TRACE=<file> writes one "frame stage hash" line
+// per pipeline stage (D detection, A association, O optimised state + landmarks, F full-graph
+// import) so two replays can be diffed to the first stage that differs. Off (no cost) when unset.
+namespace {
+struct DetTrace {
+  std::mutex mutex;
+  std::ofstream file;
+  DetTrace() { if (const char* p = std::getenv("MOWE_DET_TRACE")) file.open(p); }
+  bool on() const { return file.is_open(); }
+  void add(uint64_t frame, const char* stage, uint64_t hash) {
+    std::lock_guard<std::mutex> lock(mutex);
+    file << frame << ' ' << stage << ' ' << std::hex << hash << std::dec << '\n';
+    file.flush();
+  }
+};
+DetTrace& detTrace() { static DetTrace t; return t; }
+uint64_t fnv(const void* data, size_t n, uint64_t h = 1469598103934665603ull) {
+  const unsigned char* p = static_cast<const unsigned char*>(data);
+  for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+  return h;
+}
+// Window states (pose + speed/bias, by age) and every landmark with its observations.
+uint64_t hashEstimator(const ViSlamBackend& estimator) {
+  uint64_t h = fnv(nullptr, 0);
+  for(size_t age = 0; age < estimator.numFrames(); ++age) {
+    const StateId id = estimator.stateIdByAge(age);
+    const uint64_t v = id.value();
+    h = fnv(&v, sizeof(v), h);
+    h = fnv(estimator.pose(id).parameters().data(), 7 * sizeof(double), h);
+    h = fnv(estimator.speedAndBias(id).data(), 9 * sizeof(double), h);
+  }
+  MapPoints landmarks;
+  estimator.getLandmarks(landmarks);
+  for(const auto & lm : landmarks) {
+    const uint64_t id = lm.first.value();
+    h = fnv(&id, sizeof(id), h);
+    h = fnv(lm.second.point.data(), 4 * sizeof(double), h);
+    for(const auto & o : lm.second.observations) {
+      const uint64_t k[3] = {o.frameId, o.cameraIndex, o.keypointIndex};
+      h = fnv(k, sizeof(k), h);
+    }
+  }
+  return h;
+}
+}  // namespace
 
 
 // Constructor.
@@ -881,6 +930,7 @@ bool ThreadedSlam::processFrame() {
     }
   }
 
+  if(detTrace().on()) detTrace().add(multiFrame->id(), "P", hashEstimator(estimator_)); // T-0131
   // call the matcher
   if(!frontend_.dataAssociationAndInitialization(
         estimator_, parameters_, multiFrame, kfPrior, &asKeyframe) && !frontend_.isInitialized()) {
@@ -891,6 +941,33 @@ bool ThreadedSlam::processFrame() {
   }
   estimator_.setKeyframe(StateId(multiFrame->id()), asKeyframe);
   matchTimer.stop();
+  if(detTrace().on()) { // T-0131: keypoints + descriptors (D), landmark association (A)
+    uint64_t hD = fnv(nullptr, 0), hA = fnv(&asKeyframe, sizeof(asKeyframe));
+    const size_t descBytes = frontend_.descriptorBytes();
+    for(size_t im = 0; im < numCameras; ++im) {
+      for(size_t k = 0; k < multiFrame->numKeypoints(im); ++k) {
+        Eigen::Vector2d kp;
+        multiFrame->getKeypoint(im, k, kp);
+        hD = fnv(kp.data(), sizeof(double) * 2, hD);
+        hD = fnv(multiFrame->keypointDescriptor(im, k), descBytes, hD);
+        const uint64_t lm = multiFrame->landmarkId(im, k);
+        hA = fnv(&lm, sizeof(lm), hA);
+      }
+    }
+    detTrace().add(multiFrame->id(), "D", hD);
+    detTrace().add(multiFrame->id(), "A", hA);
+    static const bool dumpA = std::getenv("MOWE_DET_DUMP_A") != nullptr;
+    if(dumpA) { // per-keypoint association, to locate a divergence found by the hashes
+      std::ostringstream os;
+      for(size_t im = 0; im < numCameras; ++im) {
+        for(size_t k = 0; k < multiFrame->numKeypoints(im); ++k) {
+          os << multiFrame->id() << " a " << im << " " << k << " " << multiFrame->landmarkId(im, k) << "\n";
+        }
+      }
+      std::lock_guard<std::mutex> lock(detTrace().mutex);
+      detTrace().file << os.str();
+    }
+  }
 
   // Add GPS Measurements
   estimator_.addGpsMeasurementsOnAllGraphs(gpsMeasurementDeque_, imuMeasurementDeque_);
@@ -982,6 +1059,42 @@ bool ThreadedSlam::processFrame() {
     estimator_.setOptimisationTimeLimit(dt,
           parameters_.estimator.realtime_min_iterations);
   }
+  // mow-e (T-0131, mowe-nav-kb 08): pinned full-graph cadence for deterministic blocking
+  // replay. Live mode (and full_graph_join_frames < 0) keeps the upstream behaviour below:
+  // the result is imported by whichever realtime solve first sees it finished. Here the
+  // thread is launched *before* this frame's realtime thread (and has flagged itself
+  // loop-closing before that starts, so no realtime step sees the flags flip mid-frame),
+  // solved with 1 thread (Ceres sums in scheduling order otherwise), joined on the main
+  // thread exactly full_graph_join_frames frames later, and imported in that frame only.
+  ++processedFrames_;
+  const int joinFrames = parameters_.estimator.full_graph_join_frames;
+  if(blocking_ && joinFrames >= 0) {
+    importFullGraphThisFrame_ = false;
+    if(fullGraphOptimisationThread_.joinable() && processedFrames_ >= fullGraphJoinFrame_) {
+      fullGraphOptimisationThread_.join();
+      importFullGraphThisFrame_ = true;
+    }
+    if(estimator_.needsFullGraphOptimisation() && !importFullGraphThisFrame_) {
+      OKVIS_ASSERT_TRUE(Exception, !fullGraphOptimisationThread_.joinable(),
+                        "full graph requested while the previous one is pending")
+      fullGraphOptimisationThread_ = std::thread(
+            &ViSlamBackend::optimiseFullGraph, &estimator_,
+            parameters_.estimator.full_graph_iterations,
+            std::ref(posegraphOptimisationSummary_), 1, false);
+      while(!estimator_.isLoopClosing() && !estimator_.isLoopClosureAvailable()) {
+        std::this_thread::yield();
+      }
+      fullGraphJoinFrame_ = processedFrames_ + uint64_t(joinFrames);
+      if(joinFrames == 0) {
+        fullGraphOptimisationThread_.join();
+        importFullGraphThisFrame_ = true;
+      }
+    }
+    optimisationThread_ = std::thread(&ThreadedSlam::optimisePublishMarginalise,
+                                      this, multiFrame, gyr);
+    return true;
+  }
+
   optimisationThread_ = std::thread(&ThreadedSlam::optimisePublishMarginalise,
                                     this, multiFrame, gyr);
 
@@ -1025,13 +1138,29 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
 
   // import pose graph optimisation
   std::vector<StateId> updatedStatesSync;
-  if(estimator_.isLoopClosureAvailable()) {
+  // T-0131: with a pinned cadence the import happens only in the frame processFrame joined it
+  const bool pinnedFullGraph = blocking_ && parameters_.estimator.full_graph_join_frames >= 0;
+  if(pinnedFullGraph ? importFullGraphThisFrame_ : estimator_.isLoopClosureAvailable()) {
     OKVIS_ASSERT_TRUE(Exception,
                       !estimator_.isLoopClosing(),
                       "loop closure available, but still loop closing -- bug")
     TimerSwitchable synchronisationTimer("5 Import full optimisation");
     estimator_.synchroniseRealtimeAndFullGraph(updatedStatesSync);
     synchronisationTimer.stop();
+  }
+  if(detTrace().on()) { // T-0131: optimised current state + all landmarks (O), import (F)
+    if(!updatedStatesSync.empty()) detTrace().add(multiFrame->id(), "F", updatedStatesSync.size());
+    const StateId cid(multiFrame->id());
+    uint64_t h = fnv(estimator_.pose(cid).parameters().data(), 7 * sizeof(double));
+    h = fnv(estimator_.speedAndBias(cid).data(), 9 * sizeof(double), h);
+    MapPoints landmarks;
+    estimator_.getLandmarks(landmarks);
+    for(const auto & lm : landmarks) {
+      const uint64_t id = lm.first.value();
+      h = fnv(&id, sizeof(id), h);
+      h = fnv(lm.second.point.data(), 4 * sizeof(double), h);
+    }
+    detTrace().add(multiFrame->id(), "O", h);
   }
 
   // prepare for publishing
@@ -1282,6 +1411,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
         size_t(parameters_.estimator.num_loop_closure_frames),
     size_t(parameters_.estimator.num_imu_frames), affectedStates_, expand);
   marginaliseTimer.stop();
+  if(detTrace().on()) detTrace().add(multiFrame->id(), "M", hashEstimator(estimator_)); // T-0131
 }
 
 bool ThreadedSlam::needsNewLidarKeyframe()

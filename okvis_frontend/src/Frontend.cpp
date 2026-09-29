@@ -55,6 +55,7 @@
 #include <ceres/version.h>
 #pragma GCC diagnostic pop
 
+#include <cstdlib>
 #include <okvis/Frontend.hpp>
 #include <okvis/DescriptorDistance.hpp>
 #include <okvis/KeypointGrid.hpp>
@@ -952,6 +953,24 @@ bool Frontend::lighterGluePairProposals(const okvis::MultiFrame& frameA,
       std::uint32_t(frameB.geometry(imB)->imageHeight()));
   for (size_t m = 0; m < matches.size(); ++m) {
     matchBForA[matches.indices[m].first] = int(matches.indices[m].second);
+  }
+  // mow-e (T-0131): MOWE_DET_TRACE set -> input/output hashes per call, for replay diffs
+  static const bool trace = std::getenv("MOWE_DET_TRACE") != nullptr;
+  if (trace) {
+    auto fnv = [](const void* d, size_t n, uint64_t h) {
+      for (size_t i = 0; i < n; ++i) { h ^= static_cast<const unsigned char*>(d)[i]; h *= 1099511628211ull; }
+      return h;
+    };
+    uint64_t hIn = 1469598103934665603ull;
+    hIn = fnv(kptsA.data(), kptsA.size() * sizeof(float), hIn);
+    hIn = fnv(kptsB.data(), kptsB.size() * sizeof(float), hIn);
+    hIn = fnv(scoresA.data(), nA * sizeof(float), hIn);
+    hIn = fnv(scoresB.data(), nB * sizeof(float), hIn);
+    hIn = fnv(descA, nA * 64 * sizeof(float), hIn);
+    hIn = fnv(descB, nB * 64 * sizeof(float), hIn);
+    const uint64_t hOut = fnv(matchBForA.data(), matchBForA.size() * sizeof(int), 1469598103934665603ull);
+    LOG(INFO) << "LGTRACE " << frameA.id() << " " << imA << " " << frameB.id() << " " << imB
+              << " in " << std::hex << hIn << " out " << hOut << std::dec << " n " << matches.size();
   }
   return true;
 #else
@@ -2516,8 +2535,12 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       landmarkToMatch.r_W.conservativeResize(3,o + 1);
       dataPtr += (o + 1) * size_t(descBytes);
 
-      if(landmarkToMatch.descriptors.rows==0) {
-        // no observations -- weird.
+      // mow-e (T-0131): rows is o+1 >= 1 even when every observation was pruned
+      // (viewpoint / scale change) and nothing was copied: that row was uninitialised
+      // descriptorPool memory, matched as a descriptor -- heap garbage decided matches
+      // (non-deterministic replays; camera 1 reuses freed heap). No stored descriptor
+      // = nothing to match.
+      if(landmarkToMatch.kids.empty()) {
         continue;
       }
 

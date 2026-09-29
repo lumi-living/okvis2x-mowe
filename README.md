@@ -257,6 +257,23 @@ The apps can be run as follows:
 
 You find examples for the datasets used in the paper in the respective subfolders in `./config`.
 
+#### mow-e: deterministic blocking replay (T-0127, T-0131)
+Replay determinism is a test-infrastructure property of **blocking** mode (`setBlocking(true)`, i.e. the
+synchronous apps). Live mode keeps its threads, time limits and asynchronous loop-closure import unchanged.
+In blocking mode two replays of one binary on one dataset give bit-identical trajectories because:
+* the realtime solve and the pose-only solves run with 1 thread, and OpenGV RANSAC has a fixed seed (T-0127);
+* `estimator_parameters.full_graph_join_frames: N` (N >= 0; default -1 = live behaviour) runs the
+  loop-closure full-graph solve with 1 thread, starts it before the frame's realtime solve, joins it N frames
+  later on the main thread and imports it in exactly that frame (`config/tumvi/okvis2.yaml` uses 8, which reproduces the live import lag: room1 84 loop closures vs 79-85 live; 0 gives 107);
+* Ceres' fast parameter-block removal is patched (`external/CMakeLists.txt`) to remove residuals in program
+  order, not heap-address order, since the residual order drives the floating-point summation order;
+* `matchToMap` no longer matches landmarks whose observations were all pruned against an uninitialised
+  descriptor row.
+
+`MOWE_DET_TRACE=<file>` writes per-frame stage hashes (D detection, P estimator before association,
+A association, O optimised, M marginalised, F full-graph import); diff two sorted traces to find the first
+divergent stage. `MOWE_DET_DUMP_A=1` adds per-keypoint landmark ids.
+
 ### Output Files
 <details>
   <summary>Click to expand</summary>

@@ -878,7 +878,7 @@ protected:
     std::vector<::ceres::ResidualBlockId> mapResIds;
     std::vector<SubmapAlignmentFactor> submapReferenceLinks;
     std::vector<SubmapAlignmentFactor> submapLinks;
-    size_t gpsMode; ///< Status of GPS (Re-)Initialization.
+    size_t gpsMode = 0; ///< Status of GPS (Re-)Initialization. mow-e (T-0131): was uninitialised -> heap garbage in final_trajectory.csv row 1
 
     // attributes
     bool isKeyframe = false; ///< Is it a keyframe?

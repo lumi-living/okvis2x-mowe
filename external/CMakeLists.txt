@@ -66,6 +66,34 @@ if(NOT USE_SYSTEM_CERES)
   set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
   set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
   set(BUILD_BENCHMARKS OFF CACHE BOOL "Build benchmarks" FORCE)
+  # mow-e (T-0131, mowe-nav-kb 08): deterministic fast removal. With
+  # enable_fast_removal (ViGraph) ProblemImpl::RemoveParameterBlock removes the
+  # block's residuals in unordered_set<ResidualBlock*> order, i.e. by heap address.
+  # Each removal swaps the last residual into the hole, so the program's residual
+  # order - and Ceres' floating-point summation order - depended on where malloc put
+  # things (ASLR + thread interleaving): two replays of one binary diverged by ~1e-4 m.
+  # Sorting by program index, highest first, reproduces exactly the order of the
+  # slow (non-fast-removal) path. Applied in place like the BRISK patch above.
+  set(_mowe_ceres_pi "${CMAKE_CURRENT_SOURCE_DIR}/ceres-solver/internal/ceres/problem_impl.cc")
+  set(_mowe_ceres_old "        parameter_block->mutable_residual_blocks()->end());\n    for (auto* residual_block : residual_blocks_to_remove) {")
+  set(_mowe_ceres_new "        parameter_block->mutable_residual_blocks()->end());\n    // mow-e (T-0131): program order, not heap-address order\n    std::sort(residual_blocks_to_remove.begin(), residual_blocks_to_remove.end(),\n              [](const ResidualBlock* a, const ResidualBlock* b) { return a->index() > b->index(); });\n    for (auto* residual_block : residual_blocks_to_remove) {")
+  if(EXISTS "${_mowe_ceres_pi}")
+    file(READ "${_mowe_ceres_pi}" _mowe_ceres_src)
+    string(FIND "${_mowe_ceres_src}" "mow-e (T-0131)" _mowe_ceres_done)
+    if(_mowe_ceres_done EQUAL -1)
+      string(FIND "${_mowe_ceres_src}" "${_mowe_ceres_old}" _mowe_ceres_at)
+      if(_mowe_ceres_at EQUAL -1)
+        message(FATAL_ERROR "external/ceres-solver/internal/ceres/problem_impl.cc does not "
+          "contain the Ceres 2.2.0 fast-removal loop the mow-e determinism patch expects "
+          "(T-0131). The submodule was probably moved: re-check RemoveParameterBlock.")
+      endif()
+      string(REPLACE "${_mowe_ceres_old}" "${_mowe_ceres_new}" _mowe_ceres_src "${_mowe_ceres_src}")
+      file(WRITE "${_mowe_ceres_pi}" "${_mowe_ceres_src}")
+      message(STATUS "mow-e: applied Ceres deterministic fast-removal patch (T-0131)")
+    else()
+      message(STATUS "mow-e: Ceres deterministic fast-removal patch already applied (T-0131)")
+    endif()
+  endif()
   add_subdirectory(ceres-solver)
 endif()
 

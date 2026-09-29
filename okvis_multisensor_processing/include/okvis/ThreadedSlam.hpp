@@ -367,6 +367,10 @@ private:
 
   std::thread optimisationThread_; ///< Thread running optimisation.
   std::thread fullGraphOptimisationThread_; ///< Thread running loopclosure full graph optimisation.
+  // mow-e (T-0131): pinned full-graph cadence in blocking mode (full_graph_join_frames >= 0).
+  uint64_t processedFrames_ = 0; ///< Frames handed to optimisePublishMarginalise so far.
+  uint64_t fullGraphJoinFrame_ = 0; ///< Frame index at which the pending full graph is joined.
+  bool importFullGraphThisFrame_ = false; ///< Set by processFrame before the realtime thread starts.
 
   /// @}
 

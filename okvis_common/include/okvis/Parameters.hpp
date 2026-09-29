@@ -184,6 +184,11 @@ struct EstimatorParameters {
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.
+  /// mow-e (T-0131): blocking (synchronous replay) mode only. < 0 = live behaviour: the
+  /// full-graph result is imported whenever the background thread happens to finish.
+  /// N >= 0: the thread is joined N frames after its launch and imported in that frame,
+  /// solved with 1 thread, so the loop-closure import lands at a fixed frame index.
+  int full_graph_join_frames = -1;
   double p_dbow; ///< Match threshold for dBoW -- unfortunately this varies with setups.
   double drift_percentage_heuristic; ///< % allowed drift in loop closures rel. to dist. travelled.
 };

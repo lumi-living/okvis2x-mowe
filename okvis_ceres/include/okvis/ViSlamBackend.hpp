@@ -360,6 +360,25 @@ class ViSlamBackend //: public VioBackendInterface
   };
   WheelStats wheelStats() const;
 
+  /// \brief mow-e (T-0140): counters of the full-window realtime solves (onlyNewestState ==
+  ///        false: the "3 Optimise" one and GNSS re-alignments) for optimiser_stats.json.
+  struct RealtimeSolveStats {
+    uint64_t solves = 0;
+    uint64_t iterations = 0;        ///< iterations run (steps after the initial evaluation), summed.
+    uint64_t residualBlocks = 0;    ///< residual blocks in the reduced program, summed.
+    uint64_t stopConverged = 0;     ///< function/parameter/gradient tolerance.
+    uint64_t stopMaxIterations = 0; ///< realtime_max_iterations reached.
+    uint64_t stopOther = 0;         ///< callback / failure.
+    double totalS = 0.0;            ///< Ceres total_time_in_seconds, summed.
+    double preprocessorS = 0.0;     ///< Ceres preprocessor_time_in_seconds, summed.
+  };
+  RealtimeSolveStats realtimeSolveStats() const { return realtimeSolveStats_; }
+  /// \brief mow-e (T-0140): deterministic stop of the realtime solve (replaces the time limit).
+  void setRealtimeTolerances(double functionTolerance, double parameterTolerance) {
+    realtimeGraph_.options_.function_tolerance = functionTolerance;
+    realtimeGraph_.options_.parameter_tolerance = parameterTolerance;
+  }
+
   /**
    * @brief Is a state a keyframe?
    * @param id The state ID in question.
@@ -699,6 +718,7 @@ class ViSlamBackend //: public VioBackendInterface
   /// \brief Add a GPS alignment ("GPS loop closure") frame (after successful attempt).
   void addGpsAlignmentFrame(StateId gpsLossFrameId);
 
+  RealtimeSolveStats realtimeSolveStats_; ///< mow-e (T-0140).
   size_t gpsInitialAlignments_ = 0; ///< mow-e (T-0117): counters for gpsStats().
   size_t gpsFullAlignments_ = 0;    ///< mow-e (T-0117).
   size_t gpsPosAlignments_ = 0;     ///< mow-e (T-0117).

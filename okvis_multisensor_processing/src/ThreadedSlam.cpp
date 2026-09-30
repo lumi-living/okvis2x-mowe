@@ -151,12 +151,15 @@ void ThreadedSlam::init()
   }
   estimator_.setDetectorUniformityRadius(parameters_.frontend.detection_threshold);
 
-  // time limit if requested
+  // mow-e (T-0140): no wall-clock time limit any more (enforce_realtime is a no-op, see
+  // Parameters.hpp); the realtime solve stops at realtime_max_iterations or on the tolerances.
   if(parameters_.estimator.enforce_realtime) {
-    estimator_.setOptimisationTimeLimit(
-          parameters_.estimator.realtime_time_limit,
-          parameters_.estimator.realtime_min_iterations);
+    LOG(INFO) << "estimator_parameters.enforce_realtime is a no-op since T-0140: the realtime "
+                 "solve runs at most realtime_max_iterations="
+              << parameters_.estimator.realtime_max_iterations << " iterations";
   }
+  estimator_.setRealtimeTolerances(parameters_.estimator.realtime_function_tolerance,
+                                   parameters_.estimator.realtime_parameter_tolerance);
 
   // Set calibration parameters for live-to-map factor
   // TODO: generalize to n > 1 mapping camera
@@ -839,7 +842,6 @@ bool ThreadedSlam::processFrame() {
   }
 
   // start the matching
-  Time matchingStart = Time::now();
   TimerSwitchable matchTimer("2 Match");
   bool asKeyframe = false;
 
@@ -1051,15 +1053,6 @@ bool ThreadedSlam::processFrame() {
     gyr = riter->measurement.gyroscopes;
     ++riter;
   }
-  Time now = Time::now();
-  double dt = parameters_.estimator.realtime_time_limit-(now-matchingStart).toSec();
-  if(dt < 0.0) {
-    dt = 0.01;
-  }
-  if(parameters_.estimator.enforce_realtime) {
-    estimator_.setOptimisationTimeLimit(dt,
-          parameters_.estimator.realtime_min_iterations);
-  }
   // mow-e (T-0131, mowe-nav-kb 08): pinned full-graph cadence for deterministic blocking
   // replay. Live mode (and full_graph_join_frames < 0) keeps the upstream behaviour below:
   // the result is imported by whichever realtime solve first sees it finished. Here the
@@ -1130,7 +1123,10 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
   // contributions in thread-scheduling order, so identical inputs gave different
   // trajectories run to run (TUM-VI room1 XFeat VIO: 0.085 vs 0.126 m on one binary).
   // One thread makes the solve order fixed; live (non-blocking) mode keeps the config value.
-  const int realtimeThreads = blocking_ ? 1 : parameters_.estimator.realtime_num_threads;
+  // T-0140: MOWE_REPLAY_THREADS=N overrides the blocking-mode 1 for the threads sweep only.
+  static const int replayThreads = std::getenv("MOWE_REPLAY_THREADS")
+      ? std::max(1, std::atoi(std::getenv("MOWE_REPLAY_THREADS"))) : 1;
+  const int realtimeThreads = blocking_ ? replayThreads : parameters_.estimator.realtime_num_threads;
   estimator_.optimiseRealtimeGraph(
       parameters_.estimator.realtime_max_iterations, updatedStatesRealtime,
       realtimeThreads,
@@ -1793,6 +1789,30 @@ void ThreadedSlam::writeWheelStatsJson(const std::string& jsonFileName)
     f << (i ? ", " : "") << s.realtime.gatedTimesNs[i];
   }
   f << "]\n";
+  f << "}\n";
+}
+
+void ThreadedSlam::writeOptimiserStatsJson(const std::string& jsonFileName)
+{
+  const ViSlamBackend::RealtimeSolveStats s = estimator_.realtimeSolveStats();
+  const Frontend::Stats fs = frontend_.stats();
+  const double n = s.solves ? double(s.solves) : 1.0;
+  std::ofstream f(jsonFileName);
+  f << std::setprecision(9);
+  f << "{\n";
+  f << "  \"realtime_solves\": " << s.solves << ",\n";
+  f << "  \"iterations_mean\": " << double(s.iterations) / n << ",\n";
+  f << "  \"residual_blocks_mean\": " << double(s.residualBlocks) / n << ",\n";
+  f << "  \"solve_ms_mean\": " << 1e3 * s.totalS / n << ",\n";
+  f << "  \"preprocessor_share\": " << (s.totalS > 0 ? s.preprocessorS / s.totalS : 0.0) << ",\n";
+  f << "  \"stop_converged\": " << s.stopConverged << ",\n";
+  f << "  \"stop_max_iterations\": " << s.stopMaxIterations << ",\n";
+  f << "  \"stop_other\": " << s.stopOther << ",\n";
+  f << "  \"max_iterations\": " << parameters_.estimator.realtime_max_iterations << ",\n";
+  f << "  \"max_observations_per_image\": "
+    << parameters_.estimator.realtime_max_observations_per_image << ",\n";
+  f << "  \"obs_budget_frames_capped\": " << fs.obsCappedImages << ",\n";
+  f << "  \"obs_budget_dropped\": " << fs.obsDroppedByCap << "\n";
   f << "}\n";
 }
 

@@ -164,6 +164,14 @@ static void writeStats() {
     << "}\n";
 }
 
+/// \brief T-0140: live realtime-solve counters + OKVIS stage timers next to the stats file.
+static void writeLiveDiagnostics(okvis::ThreadedSlam& estimator) {
+  if (g_stats.path.empty()) return;
+  const std::string dir = g_stats.path.substr(0, g_stats.path.find_last_of('/') + 1);
+  estimator.writeOptimiserStatsJson(dir + "okvis_optimiser_stats.json");
+  std::ofstream(dir + "okvis_timing.txt") << okvis::timing::Timing::print();
+}
+
 /// \brief Last-ditch: record the crash in the stats file, then die normally.
 static void onFatalSignal(int sig) {
   g_stats.crashes = 1;
@@ -467,6 +475,7 @@ int main(int argc, char **argv) {
       }
     }
     estimator.stopThreading();
+    writeLiveDiagnostics(estimator);
     g_stats.cleanExit = 1;
     writeStats();
     rclcpp::shutdown();
@@ -618,6 +627,7 @@ int main(int argc, char **argv) {
 
     // Finish up (as okvis2x_node, minus the submapping interface).
     estimator.stopThreading();
+    writeLiveDiagnostics(estimator);
     if (haveStates) {
       estimator.setFinalTrajectoryCsvFile(
           csvPath + "/okvis2-final_trajectory.csv", false);

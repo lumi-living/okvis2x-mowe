@@ -326,6 +326,7 @@ int main(int argc, char **argv)
       LOG(INFO) <<"total processing time " << (okvis::Time::now() - startTime) << " s" << std::endl;
       // mowe: front-end statistics next to the trajectories (T-0113).
       estimator.frontend().writeStatsJson(savePath+"/frontend_stats.json");
+      estimator.writeOptimiserStatsJson(savePath+"/optimiser_stats.json");  // T-0140
       // mowe (T-0120): VPR loop-closure funnel + this run's keyframe database.
       if (estimator.frontend().usingVprLoopClosure()) {
         estimator.frontend().writeLoopStatsJson(savePath+"/loop_stats.json");

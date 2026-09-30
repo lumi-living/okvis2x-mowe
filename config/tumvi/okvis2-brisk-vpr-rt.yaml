@@ -1,8 +1,7 @@
 %YAML:1.0
-# T-0501 (2026-09-30): live full-stack replay (tumvi_player.py -> okvis2x_node_mowe camera_type:=topics,
-# fullstack_bags.launch.py). = okvis2-brisk-vpr.yaml + the gps_parameters/wheel_parameters blocks of
-# okvis2-gnss-wheel.yaml (synthetic gps0/wheel0 on /gnss/enu, /wheel/speeds) + enforce_realtime: true
-# (live: the realtime optimisation keeps its time budget instead of the deterministic replay setting).
+# T-0140 (2026-09-30): = okvis2-brisk-vpr.yaml with the realtime budget chosen by the
+# T-0140 sweep - 1 realtime iteration, at most 40 observations per image of the newest frame
+# (grid-bucketed). Suite tumvi-room1-brisk-vpr-rt; the live configs carry the same values.
 # T-0135 (2026-09-29): BRISK + VPR loop closure. Identical to okvis2.yaml (BRISK
 # front-end, T-0107/T-0131) except frontend_parameters.vpr, copied from
 # okvis2-xfeat-vpr.yaml (T-0120): DINOv2 ViT-S/14 + VLAD retrieval replaces DBoW2,
@@ -119,8 +118,7 @@ estimator_parameters:
     num_imu_frames: 3 # number of frames linked by most recent nonlinear IMU error terms
     do_loop_closures: true # whether to do VI-SLAM or VIO
     do_final_ba: false # Whether to run a full final BA
-    # T-0501 live replay. T-0140 - enforce_realtime is now a no-op (fixed iterations below)
-    enforce_realtime: true
+    enforce_realtime: true # T-0140 - no-op since T-0140 (the wall-clock stop is gone), kept for the record
     realtime_min_iterations: 3 # unused since T-0140
     # T-0140 realtime budget (sweep out/agent/T-0140/sweep.md) - fixed iterations, no wall-clock stop
     realtime_max_iterations: 1 # the realtime solve stops here (or on the tolerances)
@@ -140,46 +138,3 @@ output_parameters:
     display_overhead: false # debug overhead image. Is slow.
     enable_submapping: false # OKVIS2-X (required); VI-SLAM only, no supereight2
 
-
-# GNSS (OKVIS2-X GpsErrorAsynchronous factors on T_WS, SpeedAndBias, T_GW; ADR-0042).
-# NO trailing comments in this block: cv::FileStorage keeps "# ..." inside an unquoted
-# string scalar (data_type became "cartesian # ..." and the DatasetReader asserted; T-0117).
-#   data_type            mav0/gps0/data.csv = ns, p_GA_G xyz [m], sigma xyz [m]
-#   r_SA                 antenna in the IMU frame S [m]; = tumvi_synth_gnss.py --r-sa default
-#   yaw_error_threshold  [deg] yaw sigma of the Umeyama fit below which T_GW is frozen
-#   robust_gps_init      RTK, already gated upstream; the robust mode's gates are SPP-tuned
-gps_parameters:
-    data_type: cartesian
-    r_SA: [ 0.05, -0.02, 0.10 ]
-    yaw_error_threshold: 1.0
-    robust_gps_init: false
-
-# mow-e (T-0125): wheel odometry (WheelOdometryError on T_WS, SpeedAndBias; ADR-0042 (3)).
-# NO trailing comments in this block (cv::FileStorage keeps "# ..." in string scalars).
-#   T_SB             body frame B in the IMU frame S; TUM-VI has no body frame -> identity
-#   sigma_v          forward-speed sigma [m/s]; synthetic noise is 0.02
-#   sigma_lat/vert   [m/s], LARGE: the rig is not planar (see the header)
-#   sigma_omega      yaw-rate sigma [rad/s], INFLATED per ADR-0042 (3): the gyro is the
-#                    authoritative yaw-rate source, the encoder only backs it up. The synthetic
-#                    signal (0.1 s mocap differencing) disagrees with the room1 gyro by
-#                    0.06 rad/s 1-sigma with 0.1 s correlation; at 0.03 (T-0125 attempt 1) the
-#                    factor pinned b_g,z to that noise and doubled the position error in
-#                    the first 20 s of the run (attempt 3 measurement, 17 vs 11.5 mm RMSE)
-#   b_eff            effective track width [m]; MUST equal tumvi_synth_wheel.py --b-eff
-#   slip_gate_omega  |omega_enc - omega_gyro| [rad/s] above which the measurement is skipped
-#   slip_gate_v      |v_enc - v_B,x| [m/s] above which sigma_v is inflated x4
-#   loss             cauchy | huber on the whitened residual
-wheel_parameters:
-    T_SB:
-        [1.0, 0.0, 0.0, 0.0,
-         0.0, 1.0, 0.0, 0.0,
-         0.0, 0.0, 1.0, 0.0,
-         0.0, 0.0, 0.0, 1.0]
-    sigma_v: 0.05
-    sigma_lat: 5.0
-    sigma_vert: 5.0
-    sigma_omega: 0.3
-    b_eff: 0.5
-    slip_gate_omega: 0.15
-    slip_gate_v: 0.3
-    loss: cauchy

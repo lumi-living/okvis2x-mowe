@@ -413,6 +413,16 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
     viParameters_.estimator.full_graph_join_frames =
         int(file["estimator_parameters"]["full_graph_join_frames"]);
   }
+  {  // T-0140, all optional
+    const cv::FileNode est = file["estimator_parameters"];
+    if (est["realtime_function_tolerance"].isReal())
+      viParameters_.estimator.realtime_function_tolerance = double(est["realtime_function_tolerance"]);
+    if (est["realtime_parameter_tolerance"].isReal())
+      viParameters_.estimator.realtime_parameter_tolerance = double(est["realtime_parameter_tolerance"]);
+    if (est["realtime_max_observations_per_image"].isInt())
+      viParameters_.estimator.realtime_max_observations_per_image =
+          int(est["realtime_max_observations_per_image"]);
+  }
   parseEntry(file["estimator_parameters"], "p_dbow",
              viParameters_.estimator.p_dbow);
   parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",

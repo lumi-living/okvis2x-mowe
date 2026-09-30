@@ -118,6 +118,12 @@ if(BUILD_TESTS)
   target_compile_options(test_keypoint_grid PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
   add_test(NAME test_keypoint_grid COMMAND test_keypoint_grid)
   install(TARGETS test_keypoint_grid DESTINATION lib/${PROJECT_NAME})
+  # T-0140: per-image observation budget (grid bucketing, deterministic).
+  add_executable(test_observation_budget test/test_observation_budget.cpp)
+  target_link_libraries(test_observation_budget ${LIB_NAME} gtest gtest_main pthread)
+  target_compile_options(test_observation_budget PRIVATE ${OKVIS_PRIVATE_CXX_FLAGS})
+  add_test(NAME test_observation_budget COMMAND test_observation_budget)
+  install(TARGETS test_observation_budget DESTINATION lib/${PROJECT_NAME})
   # T-0129: one keypoint per landmark in matchToMap (float/XFeat path).
   add_executable(test_map_one_to_one test/test_map_one_to_one.cpp)
   target_link_libraries(test_map_one_to_one ${LIB_NAME} gtest gtest_main pthread)

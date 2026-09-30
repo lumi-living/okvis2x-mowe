@@ -62,6 +62,7 @@
 #include <okvis/DescriptorDistance.hpp>
 #include <okvis/KeypointGrid.hpp>
 #include <okvis/MapMatchOneToOne.hpp>
+#include <okvis/ObservationBudget.hpp>
 #include <okvis/LoopClosureGates.hpp>
 #include <cstring>
 #include <unordered_map>
@@ -2170,6 +2171,33 @@ bool Frontend::dataAssociationAndInitialization(
     }
   }
 #endif
+  // T-0140: observation budget of the newest frame (0 = off): keep at most N observations
+  // per image, grid-bucketed (ObservationBudget.hpp), and remove the surplus from the graph.
+  const int maxObs = params.estimator.realtime_max_observations_per_image;
+  if (maxObs > 0) {
+    const uint64_t mfId = framesInOut->id();
+    for (size_t im = 0; im < framesInOut->numFrames(); ++im) {
+      std::vector<BudgetCandidate> cands;
+      const size_t kSize = framesInOut->numKeypoints(im);
+      for (size_t k = 0; k < kSize; ++k) {
+        const uint64_t lmId = framesInOut->landmarkId(im, k);
+        Eigen::Vector2d pt;
+        MapPoint2 lm;
+        if (!lmId || !framesInOut->getKeypoint(im, k, pt)
+            || !estimator.getLandmark(LandmarkId(lmId), lm)) continue;
+        cands.push_back({k, pt[0], pt[1], lm.quality, lm.observations.size(), lmId});
+      }
+      const auto geom = framesInOut->geometry(im);
+      const std::vector<size_t> drop = selectObservationSurplus(
+          cands, double(geom->imageWidth()), double(geom->imageHeight()), size_t(maxObs));
+      for (size_t k : drop) estimator.removeObservation(StateId(mfId), im, k);
+      if (!drop.empty()) {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        ++stats_.obsCappedImages;
+        stats_.obsDroppedByCap += drop.size();
+      }
+    }
+  }
   estimator.cleanUnobservedLandmarks();
 
   return trackingQuality >= 0.01;

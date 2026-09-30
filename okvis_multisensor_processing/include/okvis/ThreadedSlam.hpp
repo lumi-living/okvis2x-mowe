@@ -149,6 +149,10 @@ class ThreadedSlam : public ViInterface {
   /// \brief mow-e (T-0125): wheel factor bookkeeping (counts, gates, gated stamps) as JSON.
   void writeWheelStatsJson(const std::string& jsonFileName);
 
+  /// \brief mow-e (T-0140): realtime-solve counters (iterations, residual blocks, stop reason,
+  ///        preprocessing share) and observation-budget counters as JSON.
+  void writeOptimiserStatsJson(const std::string& jsonFileName);
+
   /**
    * \brief          Add a GPS measurement with geodetic coordinates.
    * \param stamp    The measurement timestamp.

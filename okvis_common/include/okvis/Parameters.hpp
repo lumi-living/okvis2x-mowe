@@ -178,10 +178,20 @@ struct EstimatorParameters {
   int num_imu_frames; ///< Number of frames linked by most recent nonlinear IMU error terms.
   bool do_loop_closures; ///< Whether to do VI-SLAM or VIO.
   bool do_final_ba; ///< Whether to run a final full BA.
-  bool enforce_realtime; ///< Whether to limit the time budget for optimisation.
-  int realtime_min_iterations; ///< Minimum number of iterations always performed.
+  /// mow-e (T-0140): NO-OP. The wall-clock CeresIterationCallback is gone: its
+  /// realtime_min_iterations floor (15-25 ms per iteration on the Orin Nano) defeated the
+  /// budget, and a time-based stop is not reproducible. The realtime solve now stops at
+  /// realtime_max_iterations or on the Ceres tolerances below, identically live and in replay.
+  bool enforce_realtime;
+  int realtime_min_iterations; ///< Unused since T-0140 (see enforce_realtime).
   int realtime_max_iterations; ///< Never do more than these, even if not converged.
-  double realtime_time_limit; ///< Time budget for realtime optimisation. [s]
+  double realtime_time_limit; ///< Unused since T-0140 (see enforce_realtime). [s]
+  /// mow-e (T-0140): deterministic early stop of the realtime solve (Ceres defaults if absent).
+  double realtime_function_tolerance = 1e-6;
+  double realtime_parameter_tolerance = 1e-8;
+  /// mow-e (T-0140): observation budget per image of the newest frame, 0 = off. Surplus
+  /// observations (grid-bucketed, ObservationBudget.hpp) are removed after data association.
+  int realtime_max_observations_per_image = 0;
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.

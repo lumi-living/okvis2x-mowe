@@ -16,6 +16,8 @@
  * @author Stefan Leutenegger
  */
 
+#include <cstdlib>
+#include <memory>
 #include <fstream>
 #include <string>
 #include <iostream>
@@ -913,10 +915,42 @@ void ViSlamBackend::optimiseRealtimeGraph(
 
   // run the optimiser
   realtimeGraph_.options_.linear_solver_type = ::ceres::DENSE_SCHUR;
+  // mow-e (T-0140): MOWE_SCHUR_ORDERING=1 (sweep switch only) hands Ceres the Schur ordering
+  // (landmarks = group 0) instead of its per-solve automatic one. NOT deterministic: a
+  // ParameterBlockOrdering group is a std::set<double*>, so the elimination order follows heap
+  // addresses and replays diverge from state 2 (T-0140 sweep.md). No live gain either.
+  static const bool explicitOrdering = std::getenv("MOWE_SCHUR_ORDERING")
+      && std::atoi(std::getenv("MOWE_SCHUR_ORDERING")) != 0;
+  if (explicitOrdering && !(onlyNewestState && !verbose)) {
+    auto ordering = std::make_shared<::ceres::ParameterBlockOrdering>();
+    std::vector<double*> blocks;
+    realtimeGraph_.problem_->GetParameterBlocks(&blocks);
+    for (double* b : blocks) ordering->AddElementToGroup(b, 1);
+    for (const auto & lm : realtimeGraph_.landmarks_) {
+      double* b = lm.second.hPoint->parameters();
+      if (realtimeGraph_.problem_->HasParameterBlock(b)) ordering->AddElementToGroup(b, 0);
+    }
+    realtimeGraph_.options_.linear_solver_ordering = ordering;
+  } else {
+    realtimeGraph_.options_.linear_solver_ordering.reset();
+  }
   if (onlyNewestState && !verbose) {
     realtimeGraph_.optimiseVariableSubproblem(numIter, numThreads);  // T-0128
   } else {
     realtimeGraph_.optimise(numIter, numThreads, verbose);
+  }
+  if (!onlyNewestState) {  // T-0140: the main realtime solve only (not the frontend's pose-only ones)
+    const ::ceres::Solver::Summary & sum = realtimeGraph_.summary();
+    RealtimeSolveStats & st = realtimeSolveStats_;
+    ++st.solves;
+    // Ceres counts iteration 0 (the initial evaluation) as a successful step
+    st.iterations += uint64_t(std::max(0, sum.num_successful_steps + sum.num_unsuccessful_steps - 1));
+    st.residualBlocks += uint64_t(std::max(0, sum.num_residual_blocks_reduced));
+    if (sum.termination_type == ::ceres::CONVERGENCE) ++st.stopConverged;
+    else if (sum.termination_type == ::ceres::NO_CONVERGENCE) ++st.stopMaxIterations;
+    else ++st.stopOther;
+    st.totalS += sum.total_time_in_seconds;
+    st.preprocessorS += sum.preprocessor_time_in_seconds;
   }
 
   // unfreeze if necessary

@@ -145,9 +145,9 @@ estimator_parameters:
     do_final_ba: true
     enforce_realtime: true
     realtime_min_iterations: 3
-    realtime_max_iterations: 10
-    realtime_time_limit: 0.04 # [s] — watch this on the Orin Nano; raise if the
-                              # optimiser is starved (check OKVIS timing output).
+    realtime_max_iterations: 1 # T-0140 - fixed iteration count, enforce_realtime is a no-op
+    realtime_time_limit: 0.04 # unused since T-0140
+    realtime_max_observations_per_image: 40 # T-0140 observation budget (tuned on TUM-VI 512x512 BRISK)
     realtime_num_threads: 2
     full_graph_iterations: 15
     full_graph_num_threads: 2

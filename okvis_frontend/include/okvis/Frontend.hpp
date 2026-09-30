@@ -296,6 +296,8 @@ class Frontend : public ViFrontendInterface {
     uint64_t ransacFrames = 0;      ///< frames where matchToMap ran the first 3D-2D RANSAC (or the MOWE_RANSAC_PROBE probe)
     uint64_t ransacFailFrames = 0;  ///< ... and it failed (inlier ratio <= 0.7 or < 10 inliers)
     std::vector<double> inlierRatios; ///< first-RANSAC inlier ratio per frame where it ran
+    uint64_t obsCappedImages = 0;   ///< T-0140: images where the observation budget dropped some
+    uint64_t obsDroppedByCap = 0;   ///< T-0140: observations removed by the budget
   };
   /// \brief Snapshot of the statistics.
   Stats stats() const;

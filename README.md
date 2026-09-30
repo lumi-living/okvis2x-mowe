@@ -286,6 +286,18 @@ divergent stage. `MOWE_DET_DUMP_A=1` adds per-keypoint landmark ids.
 * Sweep switches: `MOWE_REPLAY_THREADS=N` (blocking replay with N solver threads — not bit-reproducible for
   N > 1), `MOWE_SCHUR_ORDERING=1` (explicit landmark-first ordering — not deterministic, heap-address order).
 
+#### Cheap solve on non-keyframes (mow-e, T-0141)
+All optional, off by default. `realtime_cheap_on_nonkeyframes: true` — a frame that matching did not make a keyframe
+gets a small solve (`ViGraph::optimiseVariableSubproblem`: landmarks, T_GW and older states constant); keyframes get
+the full window solve. Timers `3.1 Optimise keyframe` / `3.2 Optimise non-keyframe`.
+* `realtime_cheap_warmup_keyframes: N` — full solves on every frame until N keyframes were inserted (counted, so replay
+  stays bit-identical). Without it the first, short-baseline landmarks are frozen and room1 drifts 0.56 m in 6 s.
+* `realtime_cheap_variable_states: K` — the K newest states stay variable (1 = newest only; K = `num_imu_frames`
+  lets each non-keyframe be refined by the next frames' solves, as the full solve does).
+* `realtime_cheap_landmarks_variable: true` — middle tier, landmarks variable too (slower and not more accurate).
+* `realtime_keyframe_max_iterations` / `realtime_nonkeyframe_max_iterations` — per-kind iteration counts, 0 =
+  `realtime_max_iterations`.
+
 ### Output Files
 <details>
   <summary>Click to expand</summary>

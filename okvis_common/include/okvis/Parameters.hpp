@@ -192,6 +192,21 @@ struct EstimatorParameters {
   /// mow-e (T-0140): observation budget per image of the newest frame, 0 = off. Surplus
   /// observations (grid-bucketed, ObservationBudget.hpp) are removed after data association.
   int realtime_max_observations_per_image = 0;
+  /// mow-e (T-0141): non-keyframes get a newest-state-only realtime solve (landmarks, older
+  /// states and T_GW constant; newest pose, speed and biases variable) on a sub-problem of the
+  /// residuals touching it; keyframes keep the full window solve. Keyframe-ness is decided by
+  /// matching before the solve, so this adds no timing dependence.
+  bool realtime_cheap_on_nonkeyframes = false;
+  /// mow-e (T-0141): iterations of the keyframe (full window) / non-keyframe (newest state)
+  /// realtime solve when realtime_cheap_on_nonkeyframes is on; 0 = realtime_max_iterations.
+  int realtime_keyframe_max_iterations = 0;
+  int realtime_nonkeyframe_max_iterations = 0;
+  /// mow-e (T-0141): full solves on every frame until this many keyframes were inserted.
+  int realtime_cheap_warmup_keyframes = 0;
+  /// mow-e (T-0141): middle tier - the non-keyframe solve keeps landmarks variable (older states constant).
+  bool realtime_cheap_landmarks_variable = false;
+  /// mow-e (T-0141): newest states left variable by the non-keyframe solve (1 = newest only).
+  int realtime_cheap_variable_states = 1;
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.

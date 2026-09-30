@@ -850,7 +850,8 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
 
 void ViSlamBackend::optimiseRealtimeGraph(
   int numIter, std::vector<StateId> & updatedStates, int numThreads, bool verbose,
-  bool onlyNewestState, bool isInitialised)
+  bool onlyNewestState, bool isInitialised, bool reportLoopClosureAttempt, bool freezeLandmarks,
+  size_t numVariableStates)
 {
 
   //OKVIS_ASSERT_TRUE(Exception, areLandmarksInFrontOfCameras(), "before optimisation")
@@ -880,6 +881,7 @@ void ViSlamBackend::optimiseRealtimeGraph(
   // freeze if requested
   bool frozen = false;
   StateId unfreezeId;
+  double* frozenGw = nullptr;  // T-0141
   if(onlyNewestState) {
     // paranoid: find last frozen
     for(auto riter = realtimeGraph_.states_.rbegin(); riter != realtimeGraph_.states_.rend();
@@ -893,13 +895,28 @@ void ViSlamBackend::optimiseRealtimeGraph(
 
     auto riter = realtimeGraph_.states_.rbegin();
     riter++;
+    for(size_t n = 1; n < numVariableStates && riter != realtimeGraph_.states_.rend(); ++n) {
+      riter++;  // T-0141: keep the numVariableStates newest states variable
+    }
     if(riter != realtimeGraph_.states_.rend()) {
       realtimeGraph_.freezePosesUntil(riter->first);
       realtimeGraph_.freezeSpeedAndBiasesUntil(riter->first);
       frozen = true;
     }
     for(const auto & lm : realtimeGraph_.landmarks_) {
+      if(!freezeLandmarks) break;  // T-0141 middle tier
       realtimeGraph_.problem_->SetParameterBlockConstant(lm.second.hPoint->parameters());
+    }
+    // mow-e (T-0141): T_GW is one block shared by every GNSS factor; left variable (between
+    // GNSS init and freezeGpsExtrinsics) it would pull all of them into the sub-problem and be
+    // moved by a newest-state-only solve. Only the newest pose, speed and biases move here.
+    if(!realtimeGraph_.states_.empty() && !realtimeGraph_.isGpsFixed()) {
+      double* gw = realtimeGraph_.states_.begin()->second.T_GW->parameters();
+      if(realtimeGraph_.problem_->HasParameterBlock(gw)
+         && !realtimeGraph_.problem_->IsParameterBlockConstant(gw)) {
+        realtimeGraph_.problem_->SetParameterBlockConstant(gw);
+        frozenGw = gw;
+      }
     }
 
     // freeze extrinsics
@@ -967,11 +984,21 @@ void ViSlamBackend::optimiseRealtimeGraph(
       realtimeGraph_.unfreezePosesFrom(unfreezeId);
       realtimeGraph_.unfreezeSpeedAndBiasesFrom(unfreezeId);
     }
-    if(onlyNewestState) {
+    if(freezeLandmarks) {
       for(const auto & lm : realtimeGraph_.landmarks_) {
         realtimeGraph_.problem_->SetParameterBlockVariable(lm.second.hPoint->parameters());
       }
+    } else {
+      // T-0141 middle tier: landmarks moved - import them as the full solve does
+      realtimeGraph_.updateLandmarks();
+      if(!isLoopClosing_ && !isLoopClosureAvailable_) {
+        for(const auto & lm : realtimeGraph_.landmarks_) {
+          fullGraph_.setLandmark(lm.first, lm.second.hPoint->estimate(), lm.second.hPoint->initialized());
+          fullGraph_.setLandmarkQuality(lm.first, lm.second.quality);
+        }
+      }
     }
+    if(frozenGw) realtimeGraph_.problem_->SetParameterBlockVariable(frozenGw);  // T-0141
 
     // undo initial fixation
     if(initialFixation && initialFixationId) {
@@ -980,6 +1007,31 @@ void ViSlamBackend::optimiseRealtimeGraph(
 
     // adopt pose change
     auto riter = realtimeGraph_.states_.rbegin();
+    // T-0141: the older variable states (numVariableStates > 1) moved too
+    {
+      auto it = std::next(riter);
+      for(size_t n = 1; n < numVariableStates && it != realtimeGraph_.states_.rend(); ++n, ++it) {
+        if(it->second.pose->fixed()) break;
+        if(!updatedStatesLoopClosureAttempt_.count(it->first) || !reportLoopClosureAttempt) {
+          updatedStates.push_back(it->first);
+        }
+        if(!isLoopClosing_ && !isLoopClosureAvailable_) {
+          ViGraph::State & fullState = fullGraph_.states_.at(it->first);
+          fullState.pose->setEstimate(it->second.pose->estimate());
+          fullState.speedAndBias->setEstimate(it->second.speedAndBias->estimate());
+        }
+      }
+    }
+    // T-0141: report the newest state (the only one this solve moved) and, as the full solve
+    // does, the states a loop-closure attempt re-based this frame (it already set them in both
+    // graphs). Left for the next keyframe solve they may be marginalised by then (map::at).
+    if(reportLoopClosureAttempt) {
+      for(auto id : updatedStatesLoopClosureAttempt_) {
+        if(id != riter->first) updatedStates.push_back(id);
+      }
+      updatedStatesLoopClosureAttempt_.clear();
+    }
+    updatedStates.push_back(riter->first);
     if(!isLoopClosing_ && !isLoopClosureAvailable_) {
       ViGraph::State & fullState = fullGraph_.states_.at(riter->first);
       fullState.pose->setEstimate(riter->second.pose->estimate());

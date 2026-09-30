@@ -233,10 +233,20 @@ class ViSlamBackend //: public VioBackendInterface
    * @param[in] verbose Print out optimization progress and result, if true.
    * @param[in] onlyNewestState Whether to only optimise the newest states (landmarks also fixed).
    * @param[in] isInitialised If false, will soft-constrain the position to the on of State ID 1.
+   * @param[in] reportLoopClosureAttempt mow-e (T-0141): with onlyNewestState, also report (and
+   *            consume) the states a loop-closure attempt moved, as the full solve always does.
+   *            The realtime newest-state solve sets it; the frontend's pose-only solves do not.
+   * @param[in] freezeLandmarks mow-e (T-0141): with onlyNewestState, false keeps the landmarks
+   *            variable (older states still constant) — the ticket's middle tier.
+   * @param[in] numVariableStates mow-e (T-0141): with onlyNewestState, how many of the newest
+   *            states stay variable (1 = the newest only; the IMU window lets each non-keyframe
+   *            be refined by the next frames' solves as the full solve does).
    */
   void optimiseRealtimeGraph(
       int numIter, std::vector<StateId>& updatedStates,
-      int numThreads = 1, bool verbose = false, bool onlyNewestState = false, bool isInitialised = true);
+      int numThreads = 1, bool verbose = false, bool onlyNewestState = false, bool isInitialised = true,
+      bool reportLoopClosureAttempt = false, bool freezeLandmarks = true,
+      size_t numVariableStates = 1);
 
   /**
    * @brief Set a time limit for the realtime problem optimisation process.

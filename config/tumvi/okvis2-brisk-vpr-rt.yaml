@@ -123,6 +123,9 @@ estimator_parameters:
     # T-0140 realtime budget (sweep out/agent/T-0140/sweep.md) - fixed iterations, no wall-clock stop
     realtime_max_iterations: 1 # the realtime solve stops here (or on the tolerances)
     realtime_max_observations_per_image: 40 # T-0140 observation budget, 0 = off
+    realtime_cheap_on_nonkeyframes: true # T-0141 - non-keyframes get a newest-state-only solve (landmarks, older states, T_GW constant), keyframes the full window
+    realtime_cheap_warmup_keyframes: 40 # T-0141 - full solves until 40 keyframes (frozen short-baseline first landmarks drifted 0.56 m, out/agent/T-0141/sweep)
+    realtime_cheap_variable_states: 3 # T-0141 - the non-keyframe solve keeps the num_imu_frames newest states variable (1 = newest only: +48 % RPE@0.5 s)
     realtime_time_limit: 0.035 # unused since T-0140 [s]
     realtime_num_threads: 4 # number of threads for the realtime optimisation
     full_graph_iterations: 15 # don't do more than these for the full (background) optimisation

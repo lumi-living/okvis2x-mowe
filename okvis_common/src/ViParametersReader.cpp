@@ -423,6 +423,26 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
       viParameters_.estimator.realtime_max_observations_per_image =
           int(est["realtime_max_observations_per_image"]);
   }
+  if (!file["estimator_parameters"]["realtime_cheap_on_nonkeyframes"].empty()) {  // T-0141, optional
+    parseEntry(file["estimator_parameters"], "realtime_cheap_on_nonkeyframes",
+               viParameters_.estimator.realtime_cheap_on_nonkeyframes);
+  }
+  if (file["estimator_parameters"]["realtime_keyframe_max_iterations"].isInt())  // T-0141, optional
+    viParameters_.estimator.realtime_keyframe_max_iterations =
+        int(file["estimator_parameters"]["realtime_keyframe_max_iterations"]);
+  if (file["estimator_parameters"]["realtime_nonkeyframe_max_iterations"].isInt())  // T-0141, optional
+    viParameters_.estimator.realtime_nonkeyframe_max_iterations =
+        int(file["estimator_parameters"]["realtime_nonkeyframe_max_iterations"]);
+  if (file["estimator_parameters"]["realtime_cheap_warmup_keyframes"].isInt())  // T-0141, optional
+    viParameters_.estimator.realtime_cheap_warmup_keyframes =
+        int(file["estimator_parameters"]["realtime_cheap_warmup_keyframes"]);
+  if (!file["estimator_parameters"]["realtime_cheap_landmarks_variable"].empty()) {  // T-0141, optional
+    parseEntry(file["estimator_parameters"], "realtime_cheap_landmarks_variable",
+               viParameters_.estimator.realtime_cheap_landmarks_variable);
+  }
+  if (file["estimator_parameters"]["realtime_cheap_variable_states"].isInt())  // T-0141, optional
+    viParameters_.estimator.realtime_cheap_variable_states =
+        std::max(1, int(file["estimator_parameters"]["realtime_cheap_variable_states"]));
   parseEntry(file["estimator_parameters"], "p_dbow",
              viParameters_.estimator.p_dbow);
   parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",

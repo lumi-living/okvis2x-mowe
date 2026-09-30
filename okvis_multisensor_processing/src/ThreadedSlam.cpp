@@ -1127,10 +1127,29 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
   static const int replayThreads = std::getenv("MOWE_REPLAY_THREADS")
       ? std::max(1, std::atoi(std::getenv("MOWE_REPLAY_THREADS"))) : 1;
   const int realtimeThreads = blocking_ ? replayThreads : parameters_.estimator.realtime_num_threads;
-  estimator_.optimiseRealtimeGraph(
-      parameters_.estimator.realtime_max_iterations, updatedStatesRealtime,
-      realtimeThreads,
-      false, false, frontend_.isInitialized());
+  // mow-e (T-0141): newest-state-only solve on non-keyframes, full window solve on keyframes.
+  // The keyframe decision was taken by matching (dataAssociationAndInitialization) before this
+  // solve, so a keyframe never gets a cheap solve first and there is no timing dependence.
+  // Until realtime_cheap_warmup_keyframes keyframes exist every frame gets the full solve: the
+  // first landmarks come from a short baseline and, frozen, let the cheap solves drift (TUM-VI
+  // room1: 0.56 m in the first 6 s with 4 keyframes; out/agent/T-0141). Counted, not timed.
+  const bool isKf = estimator_.isKeyframe(StateId(multiFrame->id()));
+  const bool keyframeSolve = !parameters_.estimator.realtime_cheap_on_nonkeyframes
+      || !frontend_.isInitialized() || isKf
+      || keyframeSolves_ < uint64_t(std::max(0, parameters_.estimator.realtime_cheap_warmup_keyframes));
+  if (isKf) ++keyframeSolves_;
+  {
+    TimerSwitchable splitTimer(keyframeSolve ? "3.1 Optimise keyframe" : "3.2 Optimise non-keyframe");
+    const int splitIters = parameters_.estimator.realtime_cheap_on_nonkeyframes
+        ? (keyframeSolve ? parameters_.estimator.realtime_keyframe_max_iterations
+                         : parameters_.estimator.realtime_nonkeyframe_max_iterations) : 0;
+    estimator_.optimiseRealtimeGraph(
+        splitIters > 0 ? splitIters : parameters_.estimator.realtime_max_iterations, updatedStatesRealtime,
+        realtimeThreads,
+        false, !keyframeSolve, frontend_.isInitialized(), true,
+        !parameters_.estimator.realtime_cheap_landmarks_variable,
+        size_t(parameters_.estimator.realtime_cheap_variable_states));
+  }
   optimiseTimer.stop();
 
   // import pose graph optimisation
@@ -1809,6 +1828,7 @@ void ThreadedSlam::writeOptimiserStatsJson(const std::string& jsonFileName)
   f << "  \"stop_max_iterations\": " << s.stopMaxIterations << ",\n";
   f << "  \"stop_other\": " << s.stopOther << ",\n";
   f << "  \"max_iterations\": " << parameters_.estimator.realtime_max_iterations << ",\n";
+  f << "  \"cheap_on_nonkeyframes\": " << int(parameters_.estimator.realtime_cheap_on_nonkeyframes) << ",\n";
   f << "  \"max_observations_per_image\": "
     << parameters_.estimator.realtime_max_observations_per_image << ",\n";
   f << "  \"obs_budget_frames_capped\": " << fs.obsCappedImages << ",\n";

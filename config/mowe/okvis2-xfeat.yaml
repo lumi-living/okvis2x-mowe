@@ -172,7 +172,7 @@ estimator_parameters:
     do_final_ba: true
     enforce_realtime: true
     realtime_min_iterations: 3
-    realtime_max_iterations: 10
+    realtime_max_iterations: 3 # T-0140 - the removed time-limit callback stopped live solves at its 3-iteration floor
     realtime_time_limit: 0.04 # [s] — watch this on the Orin Nano; raise if the
                               # optimiser is starved (check OKVIS timing output).
     realtime_num_threads: 2

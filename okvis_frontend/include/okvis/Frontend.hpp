@@ -362,6 +362,8 @@ class Frontend : public ViFrontendInterface {
   };
   LoopStats loopStats() const;
   bool writeLoopStatsJson(const std::string& path) const;
+  /// \brief mow-e (T-0142): VPR database / stats-vector sizes as JSON members (no braces).
+  void writeMemoryAudit(std::ostream& os) const;
 
   /// \brief Descriptor distance dispatch (okvis/DescriptorDistance.hpp): BRISK
   ///        Hamming popcount, or cosine distance (1 - dot, unit descriptors)

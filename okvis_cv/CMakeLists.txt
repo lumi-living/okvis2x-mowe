@@ -82,6 +82,7 @@ if(BUILD_TESTS)
   set(TEST_NAME okvis_cv_test)
   add_executable(${TEST_NAME}
     test/TestFrame.cpp
+    test/TestKeyframeRelease.cpp
     test/TestMultiFrame.cpp
     test/TestNCameraSystem.cpp
     test/TestPinholeCamera.cpp

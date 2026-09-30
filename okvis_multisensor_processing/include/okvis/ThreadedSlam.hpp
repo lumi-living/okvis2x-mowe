@@ -153,6 +153,14 @@ class ThreadedSlam : public ViInterface {
   ///        preprocessing share) and observation-budget counters as JSON.
   void writeOptimiserStatsJson(const std::string& jsonFileName);
 
+  /// \brief mow-e (T-0142): append one JSON line of memory counters (RSS, malloc in-use,
+  ///        backend/frontend/trajectory container sizes) every \p everyFrames processed
+  ///        frames to \p jsonlFileName. Empty name = off.
+  void setMemoryAudit(const std::string& jsonlFileName, size_t everyFrames) {
+    memoryAuditPath_ = jsonlFileName;
+    memoryAuditEvery_ = std::max<size_t>(1, everyFrames);
+  }
+
   /**
    * \brief          Add a GPS measurement with geodetic coordinates.
    * \param stamp    The measurement timestamp.
@@ -374,6 +382,10 @@ private:
   // mow-e (T-0131): pinned full-graph cadence in blocking mode (full_graph_join_frames >= 0).
   uint64_t processedFrames_ = 0; ///< Frames handed to optimisePublishMarginalise so far.
   uint64_t fullGraphJoinFrame_ = 0; ///< Frame index at which the pending full graph is joined.
+  std::string memoryAuditPath_; ///< mow-e (T-0142): memory audit JSONL (empty = off).
+  size_t memoryAuditEvery_ = 100; ///< mow-e (T-0142): frames between audit lines.
+  uint64_t memoryAuditFrames_ = 0; ///< mow-e (T-0142): frames seen by the audit.
+  void writeMemoryAuditLine(const okvis::Time& t); ///< mow-e (T-0142).
   uint64_t keyframeSolves_ = 0; ///< mow-e (T-0141): keyframes seen by the realtime solve so far.
   bool importFullGraphThisFrame_ = false; ///< Set by processFrame before the realtime thread starts.
 

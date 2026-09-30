@@ -383,6 +383,12 @@ class ViSlamBackend //: public VioBackendInterface
     double preprocessorS = 0.0;     ///< Ceres preprocessor_time_in_seconds, summed.
   };
   RealtimeSolveStats realtimeSolveStats() const { return realtimeSolveStats_; }
+  /// \brief mow-e (T-0142): per-container memory audit as JSON members (no braces):
+  ///        multiframes (with images, image/keypoint/descriptor bytes), realtime/full graph
+  ///        states/landmarks/observations/residual blocks, gpsInitMap. Call only from the
+  ///        processing thread with the realtime optimisation joined (full-graph sizes are
+  ///        read without its lock: counts, never iterated).
+  void writeMemoryAudit(std::ostream& os) const;
   /// \brief mow-e (T-0140): deterministic stop of the realtime solve (replaces the time limit).
   void setRealtimeTolerances(double functionTolerance, double parameterTolerance) {
     realtimeGraph_.options_.function_tolerance = functionTolerance;

@@ -683,6 +683,9 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
         } else {
           fullGraph_.removeAllObservations(minId);
         }
+        // mow-e (T-0142): this path became a pose-graph frame too — release its images (45dade8)
+        multiFrames_.at(minId)->clearAllImages();
+        multiFrames_.at(minId)->clearAllDepthImages();
         continue;
       }
       if (convertToPosegraphFrames.size() > 0) {
@@ -813,6 +816,9 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
         } else {
           fullGraph_.removeAllObservations(minId);
         }
+        // mow-e (T-0142): this path became a pose-graph frame too — release its images (45dade8)
+        multiFrames_.at(minId)->clearAllImages();
+        multiFrames_.at(minId)->clearAllDepthImages();
         continue;
       }
       if(convertToPosegraphFrames.size() > 0 && maxCoObs > 0) {
@@ -3248,6 +3254,68 @@ double ViSlamBackend::overlapFraction(const MultiFramePtr frameA,
 void ViSlamBackend::writeLidarDebugStatisticsCsv(const std::string& csvFilePrefix)
 {
   realtimeGraph_.writeLidarDebugStatisticsCsv(csvFilePrefix);
+}
+
+
+// mow-e (T-0142): memory audit — see the header.
+void ViSlamBackend::writeMemoryAudit(std::ostream& os) const {
+  size_t withImages = 0, imageBytes = 0, keypoints = 0, keypointBytes = 0, descriptorBytes = 0;
+  size_t landmarkKeypoints = 0;
+  for (const auto& mf : multiFrames_) {
+    bool hasImage = false;
+    for (size_t im = 0; im < mf.second->numFrames(); ++im) {
+      const cv::Mat& img = mf.second->image(im);
+      if (!img.empty()) {
+        hasImage = true;
+        imageBytes += img.total() * img.elemSize();
+      }
+      const size_t n = mf.second->numKeypoints(im);
+      keypoints += n;
+      keypointBytes += n * sizeof(cv::KeyPoint);
+      const cv::Mat& d = mf.second->descriptors(im);
+      descriptorBytes += d.total() * d.elemSize();
+      for (size_t k = 0; k < n; ++k) {
+        if (mf.second->landmarkId(im, k) != 0) ++landmarkKeypoints;
+      }
+    }
+    withImages += hasImage ? 1 : 0;
+  }
+  size_t pgLinks = 0, pgConstLinks = 0, pgObservations = 0, pgLandmarks = 0;
+  for (const auto& st : realtimeGraph_.states_) {
+    for (const auto& link : st.second.twoPoseLinks) {
+      if (link.first < st.first) continue;  // each link is stored on both states
+      ++pgLinks;
+      pgObservations += link.second.errorTerm->numStoredObservations();
+      pgLandmarks += link.second.errorTerm->numStoredLandmarks();
+    }
+    pgConstLinks += st.second.twoPoseConstLinks.size();
+  }
+  os << "\"rt_pg_links\": " << pgLinks << ", \"rt_pg_link_observations\": " << pgObservations
+     << ", \"rt_pg_link_landmarks\": " << pgLandmarks << ", \"rt_pg_const_links_x2\": " << pgConstLinks << ", ";
+  os << "\"multiframes\": " << multiFrames_.size() << ", \"multiframes_with_images\": " << withImages
+     << ", \"image_mb\": " << imageBytes / 1.0e6 << ", \"keypoints\": " << keypoints
+     << ", \"keypoints_with_landmark\": " << landmarkKeypoints
+     << ", \"keypoint_mb\": " << keypointBytes / 1.0e6 << ", \"descriptor_mb\": " << descriptorBytes / 1.0e6
+     << ", \"keyframes\": " << keyFrames_.size() << ", \"imu_frames\": " << imuFrames_.size()
+     << ", \"loop_closure_frames\": " << loopClosureFrames_.size()
+     << ", \"auxiliary_states\": " << auxiliaryStates_.size()
+     << ", \"rt_states\": " << realtimeGraph_.states_.size()
+     << ", \"rt_landmarks\": " << realtimeGraph_.landmarks_.size()
+     << ", \"rt_observations\": " << realtimeGraph_.observations_.size()
+     << ", \"rt_residual_blocks\": " << realtimeGraph_.problem_->NumResidualBlocks()
+     << ", \"rt_any_states\": " << realtimeGraph_.anyState_.size()
+     << ", \"rt_gps_init_map\": " << realtimeGraph_.gpsInitMap_.size()
+     << ", \"rt_gps_states\": " << realtimeGraph_.gpsStates_.size()
+     << ", \"fg_states\": " << fullGraph_.states_.size()
+     << ", \"fg_landmarks\": " << fullGraph_.landmarks_.size()
+     << ", \"fg_observations\": " << fullGraph_.observations_.size()
+     << ", \"fg_any_states\": " << fullGraph_.anyState_.size()
+     << ", \"fg_gps_init_map\": " << fullGraph_.gpsInitMap_.size()
+     << ", \"eliminate_states\": " << eliminateStates_.size()
+     << ", \"touched_landmarks\": " << touchedLandmarks_.size()
+     << ", \"add_states_backlog\": " << addStatesBacklog_.size()
+     << ", \"gps_backlog\": " << addGpsBacklog_.size() << ", \"wheel_backlog\": " << addWheelBacklog_.size()
+     << ", \"rel_pose_constraints\": " << fullGraphRelativePoseConstraints_.size();
 }
 
 }  // namespace okvis

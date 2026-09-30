@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
+#include <malloc.h>
 
 #include <opencv2/imgproc/imgproc.hpp>
 
@@ -815,6 +816,24 @@ bool ThreadedSlam::processFrame() {
       preLastOptimisedState_.id = previousId;
       preLastOptimisedState_.timestamp = estimator_.timestamp(previousId);
     }
+  }
+
+  // mow-e (T-0142): the per-frame IMU copies are only read for states the estimator still
+  // has (publication, affected-state updates); eliminated non-keyframes left theirs behind
+  // forever (~20 measurements per frame, ≈ 2 KB/frame at 200 Hz IMU).
+  if ((processedFrames_ % 20) == 0) {
+    for (auto it = imuMeasurementsByFrame_.begin(); it != imuMeasurementsByFrame_.end();) {
+      if (!estimator_.multiFrame(it->first) && !affectedStates_.count(it->first)) {
+        it = imuMeasurementsByFrame_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // mow-e (T-0142): memory audit, with the realtime optimisation joined.
+  if (!memoryAuditPath_.empty() && (memoryAuditFrames_++ % memoryAuditEvery_) == 0) {
+    writeMemoryAuditLine(multiFrame->timestamp());
   }
 
   // break here since all local threads joined
@@ -1808,6 +1827,31 @@ void ThreadedSlam::writeWheelStatsJson(const std::string& jsonFileName)
   }
   f << "]\n";
   f << "}\n";
+}
+
+void ThreadedSlam::writeMemoryAuditLine(const okvis::Time& t) {
+  long rssKb = 0;
+  {
+    std::ifstream status("/proc/self/status");
+    std::string key;
+    while (status >> key) {
+      if (key == "VmRSS:") { status >> rssKb; break; }
+      status.ignore(1024, '\n');
+    }
+  }
+  const struct mallinfo2 mi = mallinfo2();  // all arenas (glibc >= 2.33)
+  size_t imuDeques = 0;
+  for (const auto& d : imuMeasurementsByFrame_) imuDeques += d.second.size();
+  std::ofstream f(memoryAuditPath_, std::ios::app);
+  f << std::setprecision(6) << "{\"frame\": " << memoryAuditFrames_ - 1 << ", \"t_s\": " << t.toSec()
+    << ", \"rss_mb\": " << rssKb / 1024.0 << ", \"heap_inuse_mb\": " << (mi.uordblks + mi.hblkhd) / 1.0e6
+    << ", \"heap_free_mb\": " << mi.fordblks / 1.0e6 << ", \"heap_mmap_mb\": " << mi.hblkhd / 1.0e6 << ", ";
+  estimator_.writeMemoryAudit(f);
+  f << ", ";
+  frontend_.writeMemoryAudit(f);
+  f << ", \"imu_by_frame\": " << imuMeasurementsByFrame_.size() << ", \"imu_by_frame_meas\": " << imuDeques
+    << ", \"trajectory_states\": " << trajectory_.stateIds().size()
+    << ", \"gps_status_timeline\": " << gpsStatusTimeline_.size() << "}\n";
 }
 
 void ThreadedSlam::writeOptimiserStatsJson(const std::string& jsonFileName)

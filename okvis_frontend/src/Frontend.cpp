@@ -446,6 +446,20 @@ void Frontend::vprAddCurrent(const Estimator& estimator, const MultiFrame& frame
 #endif
 }
 
+void Frontend::writeMemoryAudit(std::ostream& os) const {
+  size_t vprEntries = 0, vprDim = 0;
+#ifdef OKVIS_USE_MOWE_XFEAT
+  if (vprLoop_) {
+    vprEntries = size_t(vprLoop_->db.size());
+    vprDim = size_t(vprLoop_->db.dim());
+  }
+#endif
+  os << "\"vpr_entries\": " << vprEntries << ", \"vpr_db_mb\": " << vprEntries * vprDim * 4 / 1.0e6
+     << ", \"frontend_ms_samples\": " << stats_.frontendMs.size()
+     << ", \"inlier_ratio_samples\": " << stats_.inlierRatios.size()
+     << ", \"loop_verification_samples\": " << loopStats_.verificationMs.size();
+}
+
 Frontend::LoopStats Frontend::loopStats() const {
   std::lock_guard<std::mutex> lock(statsMutex_);
   return loopStats_;

@@ -33,6 +33,7 @@
  */
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -96,6 +97,11 @@ struct RunStats {
   /// Nano), which is allocation, not growth. Growth is measured from here.
   double rssWarmMb = 0;
   std::chrono::steady_clock::time_point tWarm;
+  /// T-0142: the map is still filling until the first loop closure, so the growth
+  /// baseline moves there once (set by the graph callback, taken by the main loop).
+  /// Without a loop closure the baseline stays at start + 10 s.
+  std::atomic<bool> loopClosureSeen{false};
+  bool warmFromLoopClosure = false;
   std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
   std::string path; ///< empty: disabled
 };
@@ -154,6 +160,7 @@ static void writeStats() {
     << "  \"rss_start_mb\": " << g_stats.rssStartMb << ",\n"
     << "  \"rss_warm_mb\": " << g_stats.rssWarmMb << ",\n"
     << "  \"warm_s\": " << warmS << ",\n"
+    << "  \"warm_from_loop_closure\": " << (g_stats.warmFromLoopClosure ? 1 : 0) << ",\n"
     << "  \"rss_peak_mb\": " << g_stats.rssPeakMb << ",\n"
     << "  \"rss_end_mb\": " << g_stats.rssEndMb << ",\n"
     << "  \"rss_growth_mb_per_min\": "
@@ -295,6 +302,11 @@ int main(int argc, char **argv) {
   // Default se::SubMapConfig: unused with enable_submapping == false.
   okvis::ThreadedSlam estimator(parameters, dBowVocDir);
   estimator.setBlocking(false);
+  if (!g_stats.path.empty()) {  // T-0142: per-container memory audit next to the stats file
+    const std::string audit = g_stats.path.substr(0, g_stats.path.find_last_of('/') + 1) + "okvis_memory.jsonl";
+    std::remove(audit.c_str());
+    estimator.setMemoryAudit(audit, 200);
+  }
   // Frontend ctor asserts on a failed engine load, so reaching here with
   // xfeat.use means the TensorRT engine is up.
   g_stats.engineLoaded = estimator.frontend().usingXFeat() ? 1 : 0;
@@ -335,6 +347,7 @@ int main(int argc, char **argv) {
                              : trackingState.trackingQuality == okvis::TrackingQuality::Marginal ? 0.3f : 0.0f;
         msg.is_keyframe = trackingState.isKeyframe;
         msg.loop_closed = trackingState.recognisedPlace;
+        if (trackingState.recognisedPlace) g_stats.loopClosureSeen = true;
         msg.full_graph_imported = trackingState.fullGraphImported;
         for (const auto &u : *updatedStates)
           if (!u.second.gpsPoints.empty() && u.second.timestamp > lastGpsStateTime) lastGpsStateTime = u.second.timestamp;
@@ -469,6 +482,11 @@ int main(int argc, char **argv) {
         if (g_stats.rssWarmMb == 0 && nextRss >= warmAt) {
           g_stats.rssWarmMb = g_stats.rssEndMb;
           g_stats.tWarm = std::chrono::steady_clock::now();
+        }
+        if (g_stats.loopClosureSeen && !g_stats.warmFromLoopClosure) {  // T-0142
+          g_stats.rssWarmMb = g_stats.rssEndMb;
+          g_stats.tWarm = std::chrono::steady_clock::now();
+          g_stats.warmFromLoopClosure = true;
         }
         nextRss += std::chrono::seconds(1);
         writeStats();  // T-0501: live counters (odom_published) for the full-stack checker's loss ratio
@@ -607,6 +625,11 @@ int main(int argc, char **argv) {
         if (g_stats.rssWarmMb == 0 && nextRss >= warmAt) {
           g_stats.rssWarmMb = g_stats.rssEndMb;
           g_stats.tWarm = std::chrono::steady_clock::now();
+        }
+        if (g_stats.loopClosureSeen && !g_stats.warmFromLoopClosure) {  // T-0142
+          g_stats.rssWarmMb = g_stats.rssEndMb;
+          g_stats.tWarm = std::chrono::steady_clock::now();
+          g_stats.warmFromLoopClosure = true;
         }
         nextRss += std::chrono::seconds(1);
       }

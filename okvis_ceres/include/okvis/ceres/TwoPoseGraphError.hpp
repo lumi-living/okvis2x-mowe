@@ -115,6 +115,14 @@ class TwoPoseGraphError : public ErrorInterface {
     return int(observations.size());
   }
 
+  /// @brief mow-e (T-0142): stored observations / landmarks (memory audit).
+  size_t numStoredObservations() const {
+    size_t n = 0;
+    for (const auto &obss : observations_) n += obss.second.size();
+    return n;
+  }
+  size_t numStoredLandmarks() const { return landmarks_.size(); }
+
   /// @brief This computes a relative pose error from the observations.
   /// @return True on success.
   virtual bool compute() = 0;

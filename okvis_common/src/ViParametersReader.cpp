@@ -443,6 +443,9 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
   if (file["estimator_parameters"]["realtime_cheap_variable_states"].isInt())  // T-0141, optional
     viParameters_.estimator.realtime_cheap_variable_states =
         std::max(1, int(file["estimator_parameters"]["realtime_cheap_variable_states"]));
+  if (file["estimator_parameters"]["camera_input_queue_size"].isInt())  // T-0141, optional
+    viParameters_.estimator.camera_input_queue_size =
+        std::max(1, int(file["estimator_parameters"]["camera_input_queue_size"]));
   parseEntry(file["estimator_parameters"], "p_dbow",
              viParameters_.estimator.p_dbow);
   parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",

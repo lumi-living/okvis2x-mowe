@@ -207,6 +207,9 @@ struct EstimatorParameters {
   bool realtime_cheap_landmarks_variable = false;
   /// mow-e (T-0141): newest states left variable by the non-keyframe solve (1 = newest only).
   int realtime_cheap_variable_states = 1;
+  /// mow-e (T-0141): live (non-blocking) camera input queue depth in frames; the oldest frame is
+  /// dropped when full. Upstream 2 (100 ms at 20 Hz) drops frames on single solve spikes.
+  int camera_input_queue_size = 2;
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.

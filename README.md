@@ -297,6 +297,9 @@ the full window solve. Timers `3.1 Optimise keyframe` / `3.2 Optimise non-keyfra
 * `realtime_cheap_landmarks_variable: true` — middle tier, landmarks variable too (slower and not more accurate).
 * `realtime_keyframe_max_iterations` / `realtime_nonkeyframe_max_iterations` — per-kind iteration counts, 0 =
   `realtime_max_iterations`.
+* `camera_input_queue_size: N` — live (non-blocking) camera input queue depth, oldest frame dropped when full
+  (upstream 2). Loop-closure / full-graph frames cost several frame periods back to back; 4 absorbs them (T-0141).
+  Each drop is logged as `frame drop at t=…`. Replay (blocking) ignores it.
 
 ### Output Files
 <details>

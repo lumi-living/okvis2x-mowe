@@ -45,8 +45,6 @@
 namespace okvis
 {
 
-static const int cameraInputQueueSize = 2;
-
 // overlap of imu data before and after two consecutive frames [seconds]:
 static const double imuTemporalOverlap = 0.02;
 
@@ -294,8 +292,9 @@ bool ThreadedSlam::addImages(const okvis::Time & stamp,
   }
   else
   {
-    if(cameraMeasurementsReceived_.PushNonBlockingDroppingIfFull(frames, cameraInputQueueSize)) {
-      DLOG(WARNING) << "frame drop ";
+    if(cameraMeasurementsReceived_.PushNonBlockingDroppingIfFull(
+         frames, size_t(parameters_.estimator.camera_input_queue_size))) {
+      LOG(WARNING) << "frame drop at t=" << stamp;  // T-0141: stamps locate the drops
       return false;
     }
     return true;

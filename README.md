@@ -300,6 +300,8 @@ the full window solve. Timers `3.1 Optimise keyframe` / `3.2 Optimise non-keyfra
 * `camera_input_queue_size: N` — live (non-blocking) camera input queue depth, oldest frame dropped when full
   (upstream 2). Loop-closure / full-graph frames cost several frame periods back to back; 4 absorbs them (T-0141).
   Each drop is logged as `frame drop at t=…`. Replay (blocking) ignores it.
+* Live configs also run `full_graph_num_threads: 1` (T-0141): with 2, the background loop-closure solve doubled
+  matching (20 → 41-50 ms) and the realtime solve on the Orin Nano for the ~1 s it runs, and frames dropped.
 
 ### Output Files
 <details>

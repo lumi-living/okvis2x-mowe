@@ -154,7 +154,7 @@ estimator_parameters:
     camera_input_queue_size: 4 # T-0141 - live frame buffer (133 ms at 30 Hz); 2 dropped bursts after loop closures (fullstack ingestion 0.979-0.985 -> 0.993)
     realtime_num_threads: 2
     full_graph_iterations: 15
-    full_graph_num_threads: 2
+    full_graph_num_threads: 1 # T-0141 - live: 2 threads starved matching (41-50 ms vs 20) and the realtime solve while loop-closing on the Orin; fullstack drops 17-45 -> 6-17 (replay pins 1 thread anyway)
     p_dbow: 0.4
     drift_percentage_heuristic: 1.35
 

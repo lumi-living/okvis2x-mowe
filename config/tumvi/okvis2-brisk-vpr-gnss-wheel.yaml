@@ -132,7 +132,7 @@ estimator_parameters:
     realtime_time_limit: 0.035 # unused since T-0140 [s]
     realtime_num_threads: 4 # number of threads for the realtime optimisation
     full_graph_iterations: 15 # don't do more than these for the full (background) optimisation
-    full_graph_num_threads: 2 # number of threads for the full (background) optimisation
+    full_graph_num_threads: 1 # T-0141 - live: 2 threads starved matching (41-50 ms vs 20) and the realtime solve while loop-closing on the Orin; fullstack drops 17-45 -> 6-17 (replay pins 1 thread anyway)
     full_graph_join_frames: 8 # T-0131 - replay only, join/import the loop-closure full graph 8 frames after it starts (1 thread) so replays are bit-identical; 8 reproduces the live import lag (room1 84 loop closures vs live 79-85, 0 gives 107); live mode ignores it
     p_dbow: 0.4 # Match threshold for dBoW -- unfortunately this varies with setups.
     drift_percentage_heuristic: 1.35 # % allowed drift in loop closures rel. to dist. travelled.

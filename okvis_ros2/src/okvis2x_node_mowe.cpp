@@ -327,6 +327,7 @@ int main(int argc, char **argv) {
                              : trackingState.trackingQuality == okvis::TrackingQuality::Marginal ? 0.3f : 0.0f;
         msg.is_keyframe = trackingState.isKeyframe;
         msg.loop_closed = trackingState.recognisedPlace;
+        msg.full_graph_imported = trackingState.fullGraphImported;
         for (const auto &u : *updatedStates)
           if (!u.second.gpsPoints.empty() && u.second.timestamp > lastGpsStateTime) lastGpsStateTime = u.second.timestamp;
         msg.last_rtk_factor_stamp = rclcpp::Time(lastGpsStateTime.sec, lastGpsStateTime.nsec);

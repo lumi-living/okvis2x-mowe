@@ -202,8 +202,12 @@ struct TrackingState {
   bool isLidarKeyframe; ///< Is it a keyframe triggered by lidar?
   TrackingQuality trackingQuality; ///< The tracking quality.
   bool recognisedPlace; ///< Has this fram recognised a place / relocalised / loop-closed?
-  bool isFullGraphOptimising; ///< Is the background loop closure optimisation currently ongoing?
+  bool isFullGraphOptimising = false; ///< Is the background loop closure optimisation currently ongoing?
   StateId currentKeyframeId; ///< The ID of the current keyframe.
+  /// mow-e (T-0501, ADR-0042 §(4)): this frame imported a background full-graph result
+  /// (loop closure / GNSS re-alignment) into the realtime graph — the moment that correction
+  /// actually lands in T_WS, 1–2 s after the detecting frame on the Orin Nano.
+  bool fullGraphImported = false;
 };
 
 class ConstantVelocityPropagator {

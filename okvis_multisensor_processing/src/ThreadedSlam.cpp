@@ -1214,6 +1214,8 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
   trackingState.id = id;
   trackingState.isKeyframe = estimator_.isKeyframe(id);
   trackingState.recognisedPlace = estimator_.closedLoop(id);
+  trackingState.isFullGraphOptimising = estimator_.isLoopClosing();
+  trackingState.fullGraphImported = !updatedStatesSync.empty(); // T-0501
   const double trackingQuality = estimator_.trackingQuality(id);
   if(trackingQuality < 0.01) {
     trackingState.trackingQuality = TrackingQuality::Lost;

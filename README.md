@@ -274,6 +274,18 @@ In blocking mode two replays of one binary on one dataset give bit-identical tra
 A association, O optimised, M marginalised, F full-graph import); diff two sorted traces to find the first
 divergent stage. `MOWE_DET_DUMP_A=1` adds per-keypoint landmark ids.
 
+#### Bounded realtime solve (mow-e, T-0140)
+* `estimator_parameters.enforce_realtime` is a **no-op**: no wall-clock `CeresIterationCallback`. The realtime
+  solve runs at most `realtime_max_iterations` and may stop earlier on `realtime_function_tolerance` /
+  `realtime_parameter_tolerance` (optional, Ceres defaults 1e-6 / 1e-8) — identical live and in replay.
+* `realtime_max_observations_per_image: N` (optional, 0 = off): the newest frame keeps at most N observations per
+  image after data association, 8x8 grid-bucketed (`okvis_frontend/include/okvis/ObservationBudget.hpp`); the
+  surplus observations are removed from both graphs (keypoints and descriptors stay in the frame).
+* `optimiser_stats.json` (app) and `okvis_optimiser_stats.json` + `okvis_timing.txt` next to `okvis2x_node_mowe`'s
+  `stats_path`: iterations, residual blocks, stop reasons, preprocessing share, budget drops.
+* Sweep switches: `MOWE_REPLAY_THREADS=N` (blocking replay with N solver threads — not bit-reproducible for
+  N > 1), `MOWE_SCHUR_ORDERING=1` (explicit landmark-first ordering — not deterministic, heap-address order).
+
 ### Output Files
 <details>
   <summary>Click to expand</summary>

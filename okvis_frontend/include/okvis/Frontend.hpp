@@ -240,6 +240,9 @@ class Frontend : public ViFrontendInterface {
     keyframeInsertionOverlapThreshold_ = threshold;
   }
 
+  /// @brief mow-e (T-0144): force a keyframe when the last one is older than this [s]; 0 = off.
+  void setKeyframeMaxInterval(double seconds) { keyframeMaxInterval_ = seconds; }
+
   /// @brief Enable/configure the XFeat-on-TensorRT frontend (Mow-e, ADR-0040).
   /// Loads the XFeat engine(s) (one per camera: detectAndDescribe runs
   /// per-camera in parallel and a TensorRT execution context is not
@@ -483,6 +486,8 @@ private:
    * @see   doWeNeedANewKeyframe()
    */
   float keyframeInsertionOverlapThreshold_;  //0.55
+  double keyframeMaxInterval_ = 0.0;  ///< mow-e (T-0144), 0 = off
+  okvis::Time lastKeyframeTime_;  ///< mow-e (T-0144): stamp of the last keyframe
 
   /**
    * @brief Decision whether a new frame should be keyframe or not, based on overlap heuristic.

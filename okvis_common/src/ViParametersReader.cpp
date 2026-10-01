@@ -307,6 +307,10 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
              viParameters_.frontend.max_num_keypoints);
   parseEntry(file["frontend_parameters"], "keyframe_overlap",
              viParameters_.frontend.keyframe_overlap);
+  if (file["frontend_parameters"]["keyframe_max_interval_s"].isReal()
+      || file["frontend_parameters"]["keyframe_max_interval_s"].isInt())  // T-0144, optional
+    viParameters_.frontend.keyframe_max_interval_s =
+        double(file["frontend_parameters"]["keyframe_max_interval_s"]);
   parseEntry(file["frontend_parameters"], "use_cnn",
              viParameters_.frontend.use_cnn);
   parseEntry(file["frontend_parameters"], "parallelise_detection",

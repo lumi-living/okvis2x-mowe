@@ -208,6 +208,12 @@ struct TrackingState {
   /// (loop closure / GNSS re-alignment) into the realtime graph — the moment that correction
   /// actually lands in T_WS, 1–2 s after the detecting frame on the Orin Nano.
   bool fullGraphImported = false;
+  /// mow-e (T-0144): the numbers behind trackingQuality, for loss analysis (states log): the
+  /// matched-area score (Lost < 0.01, Marginal < 0.3), keypoints of the frame, and keypoints
+  /// matched to a landmark that is observed in another frame (score is 0 below 8).
+  double qualityScore = -1.0;
+  int numKeypoints = -1;
+  int numMatched = -1;
 };
 
 class ConstantVelocityPropagator {

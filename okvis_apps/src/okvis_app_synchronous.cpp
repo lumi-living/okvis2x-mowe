@@ -215,6 +215,8 @@ int main(int argc, char **argv)
         << ",\"T_WB\":" << pose(state.T_WS * T_SB) << ",\"T_GW\":" << pose(state.T_GW)
         << ",\"status\":" << gpsStatus << ",\"quality\":" << int(ts.trackingQuality)
         << ",\"keyframe\":" << (ts.isKeyframe ? 1 : 0) << ",\"loop\":" << (ts.recognisedPlace ? 1 : 0)
+        << ",\"q_score\":" << ts.qualityScore << ",\"kpts\":" << ts.numKeypoints  // T-0144
+        << ",\"matched\":" << ts.numMatched
         << ",\"n_updated\":" << updated->size() << ",\"t_last_gps_ns\":" << uint64_t(lastGps.toNSec()) << "}\n";
     }
   } statesLogWriter;

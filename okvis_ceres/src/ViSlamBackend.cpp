@@ -291,7 +291,7 @@ size_t ViSlamBackend::getLandmarks(MapPoints & landmarks) const
   return realtimeGraph_.getLandmarks(landmarks);
 }
 
-double ViSlamBackend::trackingQuality(StateId id) const
+double ViSlamBackend::trackingQuality(StateId id, int* matchedPointsOut) const
 {
   const MultiFramePtr frame = multiFrame(id);
   const size_t numFrames = frame->numFrames();
@@ -329,6 +329,7 @@ double ViSlamBackend::trackingQuality(StateId id) const
     intersectionCount += std::max(0,cv::countNonZero(matchesImg.at(im)) - pointArea);
     unionCount += rows*cols - pointArea;
   }
+  if (matchedPointsOut) *matchedPointsOut = matchedPoints;  // mow-e (T-0144)
   return matchedPoints < 8 ? 0.0 : double(intersectionCount)/double(unionCount);
 }
 

@@ -428,9 +428,10 @@ class ViSlamBackend //: public VioBackendInterface
    * @brief The tracking quality w.r.t. the map:
    * fraction of the image pixels covered with matches.
    * @param id The state ID in question.
+   * @param matchedPoints mow-e (T-0144): if set, keypoints matched to a landmark seen elsewhere.
    * @return The quality.
    */
-  double trackingQuality(StateId id) const;
+  double trackingQuality(StateId id, int* matchedPoints = nullptr) const;
 
   /**
    * @brief Set if keyframe or not.

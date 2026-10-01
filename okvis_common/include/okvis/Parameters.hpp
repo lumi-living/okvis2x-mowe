@@ -161,6 +161,11 @@ struct FrontendParameters {
   int octaves; ///< Number of octaves for detection. 0 means single-scale at highest resolution.
   int max_num_keypoints; ///< Restrict to a maximum of this many keypoints per img (strongest ones).
   double keyframe_overlap; ///< Minimum field-of-view overlap.
+  /// mow-e (T-0144): insert a keyframe at least every this many seconds (0 = off, upstream). Without
+  /// one, every eliminated non-keyframe re-anchors its GNSS/wheel factors onto the last keyframe with
+  /// a copy of the whole grown IMU link — memory and cost O(t²): 60 s parked or facing a featureless
+  /// hedge took okvis_app_synchronous to 5 GB on the Orin Nano.
+  double keyframe_max_interval_s = 0.0;
   bool use_cnn; ///< Use the CNN (if available) to filter out dynamic content / sky.
   bool parallelise_detection; ///< Run parallel detect & describe.
   int num_matching_threads; ///< Parallelise matching with this number of threads.

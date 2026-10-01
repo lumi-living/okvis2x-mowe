@@ -2064,6 +2064,8 @@ bool Frontend::dataAssociationAndInitialization(
                     "Requested CNN classification, but not compiled with USE_NN option.")
 #endif
 
+  if (*asKeyframe) lastKeyframeTime_ = framesInOut->timestamp();  // mow-e (T-0144)
+
   // do stereo match -- get new landmarks only when this is a keyframe
   if(*asKeyframe) {
     TimerSwitchable matchStereoTimer("2.10 match stereo");
@@ -2268,6 +2270,13 @@ bool Frontend::doWeNeedANewKeyframe(const Estimator &estimator,
   }
 
   if (!isInitialized_) return false;
+
+  // mow-e (T-0144): bounded keyframe interval, even without detections — a featureless view or a
+  // parked mower must not keep one keyframe while GNSS/wheel factors pile onto it (Parameters.hpp).
+  if (keyframeMaxInterval_ > 0.0 && lastKeyframeTime_ != okvis::Time(0)
+      && (currentFrame->timestamp() - lastKeyframeTime_).toSec() > keyframeMaxInterval_) {
+    return true;
+  }
 
   int intersectionCount = 0;
   int unionCount = 0;

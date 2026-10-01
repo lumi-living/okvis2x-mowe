@@ -53,6 +53,14 @@ static const double imuTemporalOverlap = 0.02;
 // per pipeline stage (D detection, A association, O optimised state + landmarks, F full-graph
 // import) so two replays can be diffed to the first stage that differs. Off (no cost) when unset.
 namespace {
+/// mow-e (T-0144): upstream's quality classes (Lost < 0.01, Marginal < 0.3) plus the numbers
+/// behind them for the states log; replaces three identical copies of the classification.
+void setTrackingQuality(const ViSlamBackend& estimator, StateId id, TrackingState& ts) {
+  ts.qualityScore = estimator.trackingQuality(id, &ts.numMatched);
+  ts.numKeypoints = int(estimator.multiFrame(id)->numKeypoints());
+  ts.trackingQuality = ts.qualityScore < 0.01 ? TrackingQuality::Lost
+                     : ts.qualityScore < 0.3 ? TrackingQuality::Marginal : TrackingQuality::Good;
+}
 struct DetTrace {
   std::mutex mutex;
   std::ofstream file;
@@ -130,6 +138,7 @@ void ThreadedSlam::init()
   frontend_.setBriskDetectionMaximumKeypoints(size_t(parameters_.frontend.max_num_keypoints));
   frontend_.setDetector(parameters_.frontend.detector);  // T-0134: brisk | orb
   frontend_.setKeyframeInsertionOverlapThreshold(float(parameters_.frontend.keyframe_overlap));
+  frontend_.setKeyframeMaxInterval(parameters_.frontend.keyframe_max_interval_s);  // mow-e (T-0144)
   // XFeat/LighterGlue frontend (Mow-e, ADR-0040): after the BRISK setters, so
   // matching_threshold is already set and can be re-interpreted (cosine).
   frontend_.setXFeatParameters(parameters_.frontend.xfeat);
@@ -1249,14 +1258,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
   trackingState.recognisedPlace = estimator_.closedLoop(id);
   trackingState.isFullGraphOptimising = estimator_.isLoopClosing();
   trackingState.fullGraphImported = !updatedStatesSync.empty(); // T-0501
-  const double trackingQuality = estimator_.trackingQuality(id);
-  if(trackingQuality < 0.01) {
-    trackingState.trackingQuality = TrackingQuality::Lost;
-  } else if (trackingQuality < 0.3){
-    trackingState.trackingQuality = TrackingQuality::Marginal;
-  } else {
-    trackingState.trackingQuality = TrackingQuality::Good;
-  }
+  setTrackingQuality(estimator_, id, trackingState);  // mow-e (T-0144)
   trackingState.currentKeyframeId = estimator_.mostOverlappedStateId(id, false);
 
   // re-propagate
@@ -1594,14 +1596,7 @@ void ThreadedSlam::stopThreading() {
       trackingState.id = currentId;
       trackingState.isKeyframe = estimator_.isKeyframe(currentId);
       trackingState.recognisedPlace = estimator_.closedLoop(currentId);
-      const double trackingQuality = estimator_.trackingQuality(currentId);
-      if (trackingQuality < 0.01) {
-        trackingState.trackingQuality = TrackingQuality::Lost;
-      } else if (trackingQuality < 0.3) {
-        trackingState.trackingQuality = TrackingQuality::Marginal;
-      } else {
-        trackingState.trackingQuality = TrackingQuality::Good;
-      }
+      setTrackingQuality(estimator_, currentId, trackingState);  // mow-e (T-0144)
       trackingState.currentKeyframeId = estimator_.mostOverlappedStateId(currentId, false);
       hasStarted_.store(true);
 
@@ -1942,14 +1937,7 @@ void ThreadedSlam::doFinalBa()
   trackingState.id = currentId;
   trackingState.isKeyframe = estimator_.isKeyframe(currentId);
   trackingState.recognisedPlace = estimator_.closedLoop(currentId);
-  const double trackingQuality = estimator_.trackingQuality(currentId);
-  if(trackingQuality < 0.01) {
-    trackingState.trackingQuality = TrackingQuality::Lost;
-  } else if (trackingQuality < 0.3){
-    trackingState.trackingQuality = TrackingQuality::Marginal;
-  } else {
-    trackingState.trackingQuality = TrackingQuality::Good;
-  }
+  setTrackingQuality(estimator_, currentId, trackingState);  // mow-e (T-0144)
   trackingState.currentKeyframeId = estimator_.mostOverlappedStateId(currentId, false);
   hasStarted_.store(true);
 

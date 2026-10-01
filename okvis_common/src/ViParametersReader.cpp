@@ -475,7 +475,8 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
                 << "\tdata_type: " << (*viParameters_.gps).type << " \n"
                 << "\tr_SA: " << (*viParameters_.gps).r_SA.transpose() << " \n"
                 << "\tyaw_error_threshold: " << std::to_string((*viParameters_.gps).yawErrorThreshold) << " \n"
-                << "\trobust_gps_init: " << std::boolalpha << (*viParameters_.gps).robustGpsInit;
+                << "\trobust_gps_init: " << std::boolalpha << (*viParameters_.gps).robustGpsInit << " \n"
+                << "\tloss: " << (*viParameters_.gps).loss << "(" << (*viParameters_.gps).lossScale << ")";
     }
   } else {
     LOG(INFO) << "No GPS declared";
@@ -768,6 +769,13 @@ bool ViParametersReader::getGpsCalibration(const cv::FileNode& calibrationNode, 
              gpsParameters.yawErrorThreshold);
   parseEntry(calibrationNode, "robust_gps_init",
              gpsParameters.robustGpsInit);
+  // mow-e (T-0144): optional, default = upstream Cauchy(3.0)
+  if (calibrationNode["loss"].isString()) gpsParameters.loss = std::string(calibrationNode["loss"]);
+  if (calibrationNode["loss_scale"].isReal() || calibrationNode["loss_scale"].isInt())
+    gpsParameters.lossScale = double(calibrationNode["loss_scale"]);
+  OKVIS_ASSERT_TRUE(Exception, (gpsParameters.loss == "cauchy" || gpsParameters.loss == "huber")
+                    && gpsParameters.lossScale > 0.0,
+                    "gps_parameters.loss must be cauchy|huber with loss_scale > 0, got " << gpsParameters.loss)
 
   return true;
 }

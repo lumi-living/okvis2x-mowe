@@ -58,6 +58,8 @@ gps_parameters:
   r_SA: [-0.26, 0.005, 0.18500000000000005]
   yaw_error_threshold: 1.0
   robust_gps_init: false
+  loss: huber
+  loss_scale: 10.0
 wheel_parameters:
   T_SB: [1.0, 0.0, 0.0, -0.16, 0.0, 1.0, 0.0, 0.005, 0.0, 0.0, 1.0, -0.365, 0.0, 0.0, 0.0, 1.0]
   sigma_v: 0.05

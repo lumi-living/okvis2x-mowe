@@ -245,10 +245,15 @@ struct GpsParameters {
     Eigen::Vector3d r_SA; ///< Translation IMU sensor to GPS antenna; known from calibration
     double yawErrorThreshold; /// < Threshold on maximum estimated yaw error [degree] for initialization
     bool robustGpsInit; /// < Flag if robust initialization is needed (low-grade GPS sensor)
+    /// mow-e (T-0144): robust loss on the whitened GNSS residual, "cauchy" | "huber", and its scale in sigma.
+    /// Upstream is Cauchy(3): with RTK sigma ~1.4 cm a 10 cm VIO excursion already cuts a fix's weight
+    /// to ~0.08 and a metre to ~1e-3, so the estimator never comes back; Huber keeps a bounded, non-vanishing pull.
+    std::string loss;
+    double lossScale;
 
     /// Default Constructor (no GPS)
     GpsParameters() : type("none"), r_SA(Eigen::Vector3d(0., 0., 0.)),
-                      yawErrorThreshold(0.), robustGpsInit(false)
+                      yawErrorThreshold(0.), robustGpsInit(false), loss("cauchy"), lossScale(3.0)
                       {}
 };
 

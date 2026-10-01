@@ -289,6 +289,12 @@ int ViGraph::addGps(const GpsParameters& gpsParameters) {
     return -1;
   }
   gpsParametersVec_.push_back(gpsParameters);
+  // mow-e (T-0144): configurable GNSS loss (Parameters.hpp GpsParameters::loss); set before any GNSS factor exists
+  if (gpsParameters.loss == "huber") {
+    cauchyGpsLossFunctionPtr_.reset(new ::ceres::HuberLoss(gpsParameters.lossScale));
+  } else {
+    cauchyGpsLossFunctionPtr_.reset(new ::ceres::CauchyLoss(gpsParameters.lossScale));
+  }
   return static_cast<int>(gpsParametersVec_.size()) - 1;
 }
 

@@ -161,7 +161,8 @@ bool ViGraphEstimator::eliminateStateByImuMerge(StateId stateId, StateId refId)
           imuParametersVec_.back(), previousState.timestamp, old.tw(), old.wheelParameters()));
       merged.residualBlockId = problem_->AddResidualBlock(
           merged.errorTerm.get(), wheelLossFunctionPtr_.get(),
-          previousState.pose->parameters(), previousState.speedAndBias->parameters());
+          previousState.pose->parameters(), previousState.speedAndBias->parameters(),
+          wheelScaleBlock(old.tw()));  // T-0145: same segment (it exists: old.tw was added)
       previousState.WheelFactors.push_back(merged);
       ++wheelFactorStats_.merged;
     }

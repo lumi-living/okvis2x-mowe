@@ -60,6 +60,7 @@ int ViSlamBackend::addGps(const GpsParameters &gpsParameters)
 // mow-e (T-0125, ADR-0042 design item 3)
 int ViSlamBackend::addWheel(const WheelParameters &wheelParameters)
 {
+  fullGraph_.setWheelScaleMirror(true);  // T-0145: the realtime graph estimates the scale
   fullGraph_.addWheel(wheelParameters);
   return realtimeGraph_.addWheel(wheelParameters);
 }
@@ -889,6 +890,7 @@ void ViSlamBackend::optimiseRealtimeGraph(
   bool frozen = false;
   StateId unfreezeId;
   double* frozenGw = nullptr;  // T-0141
+  double* frozenWheelScale = nullptr;  // T-0145
   if(onlyNewestState) {
     // paranoid: find last frozen
     for(auto riter = realtimeGraph_.states_.rbegin(); riter != realtimeGraph_.states_.rend();
@@ -925,6 +927,9 @@ void ViSlamBackend::optimiseRealtimeGraph(
         frozenGw = gw;
       }
     }
+    // mow-e (T-0145): likewise the wheel scale (it would pull in its whole segment's factors)
+    frozenWheelScale = realtimeGraph_.variableWheelScaleBlock();
+    if(frozenWheelScale) realtimeGraph_.problem_->SetParameterBlockConstant(frozenWheelScale);
 
     // freeze extrinsics
     for (size_t i = 0; i < realtimeGraph_.cameraParametersVec_.size(); ++i) {
@@ -1006,6 +1011,7 @@ void ViSlamBackend::optimiseRealtimeGraph(
       }
     }
     if(frozenGw) realtimeGraph_.problem_->SetParameterBlockVariable(frozenGw);  // T-0141
+    if(frozenWheelScale) realtimeGraph_.problem_->SetParameterBlockVariable(frozenWheelScale);  // T-0145
 
     // undo initial fixation
     if(initialFixation && initialFixationId) {
@@ -1076,6 +1082,10 @@ void ViSlamBackend::optimiseRealtimeGraph(
       fullState.speedAndBias->setEstimate(riter->second.speedAndBias->estimate());
       fullState.T_GW->setEstimate(riter->second.T_GW->estimate());
     }
+  }
+
+  if(!isLoopClosing_ && !isLoopClosureAvailable_) {
+    fullGraph_.setWheelScalesFrom(realtimeGraph_);  // T-0145: the full graph mirrors the scale
   }
 
   // Check if GPS Trafo observable
@@ -2566,6 +2576,7 @@ ViSlamBackend::WheelStats ViSlamBackend::wheelStats() const
   s.full = fullGraph_.wheelFactorStats();
   s.factorsInRealtimeGraph = realtimeGraph_.numWheelFactors();
   s.factorsInFullGraph = fullGraph_.numWheelFactors();
+  s.scaleSegments = realtimeGraph_.wheelScaleSegments();  // T-0145
   s.backlogReanchored = wheelBacklogReanchored_;
   s.backlogDropped = wheelBacklogDropped_;
   return s;

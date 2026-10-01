@@ -173,6 +173,10 @@ gps_parameters:
 #   slip_gate_omega  |omega_enc - omega_gyro| [rad/s] above which the measurement is skipped
 #   slip_gate_v      |v_enc - v_B,x| [m/s] above which sigma_v is inflated x4
 #   loss             cauchy | huber on the whitened residual
+#   scale            T-0145: initial encoder speed scale (v_x^enc = s v_B,x); the T-0137 record once there is one
+#   scale_sigma      prior sigma on the first scale segment; 0.05 = the contract's +-10 % at 2 sigma
+#   scale_walk       random walk [1/sqrt(s)]; 2e-4 = 1.2 % per hour (tension/wear), 0.15 % over a 60 s outage
+#   scale_segment_s  piecewise-constant segment [s]; older segments freeze and hand on their sigma
 wheel_parameters:
     T_SB:
         [1.0, 0.0, 0.0, 0.0,
@@ -187,3 +191,7 @@ wheel_parameters:
     slip_gate_omega: 0.15
     slip_gate_v: 0.3
     loss: cauchy
+    scale: 1.0
+    scale_sigma: 0.05
+    scale_walk: 0.0002
+    scale_segment_s: 10.0

@@ -5,6 +5,8 @@
  *  3. Slip gates: yaw-rate gate skips, speed gate inflates sigma_v.
  *  4. eliminateStateByImuMerge re-anchors the factor to the previous state (count kept,
  *     residual block kept, same residual).
+ *  5. T-0145 wheel scale: Jacobian w.r.t. s, convergence of s on a 5 % over-reading encoder
+ *     with the motion known (GNSS) and prior-held without, segment freeze / hand-on in ViGraph.
  *
  * SPDX-License-Identifier: BSD-3-Clause, see LICENESE file for details
  */
@@ -19,6 +21,9 @@
 #include <okvis/kinematics/operators.hpp>
 #include <okvis/Measurements.hpp>
 #include <okvis/Parameters.hpp>
+#include <ceres/manifold.h>
+#include <ceres/problem.h>
+#include <ceres/solver.h>
 
 namespace {
 
@@ -106,7 +111,8 @@ TEST(okvisTestSuite, WheelOdometryErrorModel) {
   okvis::SpeedAndBias sb = okvis::SpeedAndBias::Zero();
   sb.head<3>() = m.v_W(tk);
   okvis::ceres::SpeedAndBiasParameterBlock sbBlock(sb, 0, okvis::Time(tk));
-  const double* parameters[2] = {pose.parameters(), sbBlock.parameters()};
+  double scale = 1.0;
+  const double* parameters[3] = {pose.parameters(), sbBlock.parameters(), &scale};
   Eigen::Vector4d r;
   ASSERT_TRUE(term.Evaluate(parameters, r.data(), nullptr));
   // Forward speed and yaw rate match the truth (90 ms of 1 kHz trapezoidal preintegration
@@ -130,6 +136,16 @@ TEST(okvisTestSuite, WheelOdometryErrorModel) {
   ASSERT_TRUE(off.Evaluate(parameters, r2.data(), nullptr));
   EXPECT_NEAR(r2[0], 0.5, 2e-3);
   EXPECT_LT((r2.tail<3>() - r.tail<3>()).norm(), 1e-9);
+  // T-0145: an encoder over-reading by 5 % is explained exactly by s = 1.05 (forward row only)
+  okvis::ceres::WheelOdometryError over(Eigen::Vector2d(1.05 * term.measurement()[0], term.measurement()[1]),
+                                        okvis::ceres::WheelOdometryError::sigmas_t(1, 1, 1, 1),
+                                        m.imuMeasurements, m.imu, okvis::Time(tk), okvis::Time(tw), w);
+  Eigen::Vector4d r3;
+  scale = 1.05;
+  ASSERT_TRUE(over.Evaluate(parameters, r3.data(), nullptr));
+  EXPECT_NEAR(r3[0], 0.0, 3e-3);
+  EXPECT_LT((r3.tail<3>() - r.tail<3>()).norm(), 1e-9);
+  EXPECT_NEAR(over.speedBx(), term.measurement()[0], 2e-3);
 }
 
 TEST(okvisTestSuite, WheelOdometryErrorJacobians) {
@@ -149,14 +165,16 @@ TEST(okvisTestSuite, WheelOdometryErrorJacobians) {
   sb.tail<3>() = Eigen::Vector3d(-0.05, 0.02, 0.04);
   okvis::ceres::PoseParameterBlock pose(T_k, 0, okvis::Time(tk));
   okvis::ceres::SpeedAndBiasParameterBlock sbBlock(sb, 0, okvis::Time(tk));
-  double* parameters[2] = {pose.parameters(), sbBlock.parameters()};
+  double scale = 1.04;  // T-0145: away from 1 so the scaled forward row is exercised
+  double* parameters[3] = {pose.parameters(), sbBlock.parameters(), &scale};
 
   Eigen::Matrix<double, 4, 7, Eigen::RowMajor> J0;
   Eigen::Matrix<double, 4, 9, Eigen::RowMajor> J1;
+  Eigen::Vector4d J2, J2min;
   Eigen::Matrix<double, 4, 6, Eigen::RowMajor> J0min;
   Eigen::Matrix<double, 4, 9, Eigen::RowMajor> J1min;
-  double* jacobians[2] = {J0.data(), J1.data()};
-  double* jacobiansMinimal[2] = {J0min.data(), J1min.data()};
+  double* jacobians[3] = {J0.data(), J1.data(), J2.data()};
+  double* jacobiansMinimal[3] = {J0min.data(), J1min.data(), J2min.data()};
   Eigen::Vector4d residuals;
   // twice: the first call fixes the bias linearisation point
   ASSERT_TRUE(term.EvaluateWithMinimalJacobians(parameters, residuals.data(), jacobians, jacobiansMinimal));
@@ -180,6 +198,17 @@ TEST(okvisTestSuite, WheelOdometryErrorJacobians) {
     d[i] = -dx; sbBlock.plus(parameters[1], d.data(), parameters[1]); term.Evaluate(parameters, rm.data(), nullptr); sbBlock.setEstimate(sb);
     J1n.col(i) = (rp - rm) / (2.0 * dx);
   }
+  Eigen::Vector4d J2n;
+  {
+    Eigen::Vector4d rp, rm;
+    scale = 1.04 + dx; term.Evaluate(parameters, rp.data(), nullptr);
+    scale = 1.04 - dx; term.Evaluate(parameters, rm.data(), nullptr);
+    scale = 1.04;
+    J2n = (rp - rm) / (2.0 * dx);
+  }
+  EXPECT_LT((J2n - J2).norm() / J2.norm(), 1e-6) << "J2 " << J2.transpose() << " num " << J2n.transpose();
+  EXPECT_TRUE(J2min.isApprox(J2));
+  EXPECT_LT(J2.tail<3>().norm(), 1e-15);
   Eigen::Matrix<double, 6, 7, Eigen::RowMajor> lift;
   okvis::ceres::PoseManifold::minusJacobian(parameters[0], lift.data());
   // whitened by 1/0.05 = 20; relative bounds as in TestGpsMerge
@@ -237,7 +266,8 @@ struct GraphFixture {
                            const okvis::ceres::WheelOdometryError& term) {
     okvis::ceres::PoseParameterBlock pose(graph.pose(id), 0, graph.timestamp(id));
     okvis::ceres::SpeedAndBiasParameterBlock sb(graph.speedAndBias(id), 0, graph.timestamp(id));
-    const double* parameters[2] = {pose.parameters(), sb.parameters()};
+    const double scale = 1.0;
+    const double* parameters[3] = {pose.parameters(), sb.parameters(), &scale};
     Eigen::Vector4d r;
     EXPECT_TRUE(term.Evaluate(parameters, r.data(), nullptr));
     return r;
@@ -309,4 +339,152 @@ TEST(okvisTestSuite, WheelMergeKeepsFactorOnPreviousState) {
   EXPECT_LT((r_new - r_old).norm(), 1e-2) << "old " << r_old.transpose() << " new " << r_new.transpose();
   // the yaw-rate residual is the -0.08 rad/s encoder yaw rate whitened by 1/0.05
   EXPECT_NEAR(r_new[3], -0.08 / f.wheelParameters.sigma_omega, 1e-6);
+}
+
+namespace {
+
+/// T-0145: a 20 s drive (the Motion trajectory sampled every 0.1 s, one wheel factor per state
+/// 0.05 s after it) with encoders over-reading by 5 %; scale prior N(1, 0.05) as in the configs.
+struct ScaleProblem {
+  Motion m{20.0};
+  okvis::WheelParameters w = testWheelParameters();
+  std::vector<std::unique_ptr<okvis::ceres::PoseParameterBlock>> poses;
+  std::vector<std::unique_ptr<okvis::ceres::SpeedAndBiasParameterBlock>> speeds;
+  std::vector<std::unique_ptr<okvis::ceres::WheelOdometryError>> terms;
+  okvis::ceres::WheelScalePrior prior{1.0, 0.05};
+  okvis::ceres::PoseManifold poseManifold;
+  ::ceres::SubsetManifold velocityOnly{9, {3, 4, 5, 6, 7, 8}};  // biases constant
+  double scale = 1.0;
+  ::ceres::Problem::Options options() {
+    ::ceres::Problem::Options o;
+    o.cost_function_ownership = ::ceres::DO_NOT_TAKE_OWNERSHIP;
+    o.manifold_ownership = ::ceres::DO_NOT_TAKE_OWNERSHIP;
+    return o;
+  }
+  ::ceres::Problem problem{options()};
+
+  /// \param motionKnown Poses and velocities constant at the truth (what RTK-GNSS pins down);
+  ///        otherwise the velocities are free and only the wheel factors and the prior remain.
+  explicit ScaleProblem(bool motionKnown) {
+    for (double tk = 0.1; tk < 19.8; tk += 0.1) {
+      const double tw = tk + 0.05;
+      okvis::SpeedAndBias sb = okvis::SpeedAndBias::Zero();
+      sb.head<3>() = m.v_W(tk);
+      poses.emplace_back(new okvis::ceres::PoseParameterBlock(m.pose(tk), 0, okvis::Time(tk)));
+      speeds.emplace_back(new okvis::ceres::SpeedAndBiasParameterBlock(sb, 0, okvis::Time(tk)));
+      Eigen::Vector2d z = m.measurement(tw, w);
+      z[0] *= 1.05;
+      terms.emplace_back(new okvis::ceres::WheelOdometryError(
+          z, okvis::ceres::WheelOdometryError::sigmas_t(w.sigma_v, w.sigma_lat, w.sigma_vert, w.sigma_omega),
+          m.imuMeasurements, m.imu, okvis::Time(tk), okvis::Time(tw), w));
+      problem.AddParameterBlock(poses.back()->parameters(), 7, &poseManifold);
+      problem.AddResidualBlock(terms.back().get(), nullptr, poses.back()->parameters(),
+                               speeds.back()->parameters(), &scale);
+      problem.SetParameterBlockConstant(poses.back()->parameters());
+      if (motionKnown) {
+        problem.SetParameterBlockConstant(speeds.back()->parameters());
+      } else {  // biases stay put, the velocity is free
+        problem.SetManifold(speeds.back()->parameters(), &velocityOnly);
+      }
+    }
+    problem.AddResidualBlock(&prior, nullptr, &scale);
+  }
+  void solve() {
+    ::ceres::Solver::Options o;
+    o.max_num_iterations = 50;
+    o.linear_solver_type = ::ceres::SPARSE_NORMAL_CHOLESKY;
+    ::ceres::Solver::Summary summary;
+    ::ceres::Solve(o, &problem, &summary);
+    ASSERT_TRUE(summary.IsSolutionUsable()) << summary.BriefReport();
+  }
+};
+
+}  // namespace
+
+TEST(okvisTestSuite, WheelScaleConvergesWithKnownMotion) {
+  ScaleProblem p(true);
+  p.solve();
+  EXPECT_NEAR(p.scale, 1.05, 0.01);
+  EXPECT_NEAR(p.scale, 1.05, 1e-3);  // 200 factors at |v| ~ 1 m/s, sigma_v 0.05: the prior is negligible
+}
+
+TEST(okvisTestSuite, WheelScaleHeldByPriorWithoutGnss) {
+  ScaleProblem p(false);
+  p.solve();
+  // the velocities absorb the 5 %; with nothing else observing the speed the prior holds s
+  EXPECT_NEAR(p.scale, 1.0, 0.01);
+}
+
+TEST(okvisTestSuite, WheelScaleSegmentsFreezeAndHandOn) {
+  okvis::ViGraphEstimator graph;
+  okvis::ImuParameters imuParameters = testImuParameters();
+  okvis::WheelParameters w = testWheelParameters();
+  w.scale = 1.02;
+  w.scale_sigma = 0.05;
+  w.scale_walk = 0.01;
+  w.scale_segment_s = 0.3;  // fixture states at t0 + {0, 0.4, 0.8} s, t0 = 1000 s
+  graph.addImu(imuParameters);
+  okvis::CameraParameters cameraParameters;
+  graph.addCamera(cameraParameters);
+  graph.addWheel(w);
+  // (not GraphFixture: it adds the default wheel parameters)
+  okvis::ImuMeasurementDeque imu;
+  const okvis::Time t0(1000.0);
+  for (size_t i = 0; i <= 300; ++i) {
+    imu.push_back(okvis::ImuMeasurement(t0 + okvis::Duration(double(i) / 200.0),
+        okvis::ImuSensorReadings(Eigen::Vector3d::Zero(), Eigen::Vector3d(0, 0, imuParameters.g))));
+  }
+  std::shared_ptr<const okvis::kinematics::Transformation> T_SC(new okvis::kinematics::Transformation());
+  std::shared_ptr<const okvis::cameras::CameraBase> geometry(
+      okvis::cameras::PinholeCamera<okvis::cameras::EquidistantDistortion>::createTestObject());
+  okvis::cameras::NCameraSystem cameras;
+  cameras.addCamera(T_SC, geometry, okvis::cameras::NCameraSystem::DistortionType::Equidistant);
+  const okvis::StateId id0 = graph.addStatesInitialise(t0, imu, cameras);
+  const okvis::StateId id1 = graph.addStatesPropagate(t0 + okvis::Duration(0.4), imu, false);
+  const okvis::StateId id2 = graph.addStatesPropagate(t0 + okvis::Duration(0.8), imu, true);
+  auto meas = [&](okvis::StateId id, double dt) {
+    okvis::WheelMeasurement m;
+    m.timeStamp = graph.timestamp(id) + okvis::Duration(dt);
+    m.measurement = okvis::WheelSensorReadings(0.0, 0.0, w.b_eff, 0);
+    return m;
+  };
+  EXPECT_DOUBLE_EQ(graph.wheelScale(), 1.02);  // before any measurement: the configured value
+  ASSERT_TRUE(graph.addWheelMeasurement(id0, meas(id0, 0.1), imu));    // 1000.1 s: segment 3333
+  ASSERT_TRUE(graph.addWheelMeasurement(id1, meas(id1, 0.05), imu));   // 1000.45 s: segment 3334
+  auto seg = graph.wheelScaleSegments();
+  ASSERT_EQ(seg.size(), 2u);
+  EXPECT_TRUE(seg[0].frozen);
+  EXPECT_FALSE(seg[1].frozen);
+  EXPECT_DOUBLE_EQ(seg[0].sigma, 0.05);
+  // a standing robot carries no scale information: the frozen sigma is the prior's
+  EXPECT_NEAR(seg[0].frozenSigma, 0.05, 1e-12);
+  EXPECT_NEAR(seg[1].sigma, std::sqrt(0.05 * 0.05 + 0.01 * 0.01 * 0.3), 1e-12);
+  EXPECT_DOUBLE_EQ(seg[1].value, 1.02);
+  EXPECT_NEAR(seg[0].start.toSec(), 3333 * 0.3, 1e-6);
+  EXPECT_EQ(graph.variableWheelScaleBlock() != nullptr, true);
+  // a late measurement for the frozen segment uses it, does not open a new one
+  ASSERT_TRUE(graph.addWheelMeasurement(id0, meas(id0, 0.15), imu));
+  EXPECT_EQ(graph.wheelScaleSegments().size(), 2u);
+  // the elimination merge re-anchors id1's factor onto id0 in the same (newest) segment
+  ASSERT_TRUE(graph.removeAllObservations(id1));
+  ASSERT_TRUE(graph.eliminateStateByImuMerge(id1, id2));
+  EXPECT_EQ(graph.numWheelFactors(id0), 3u);
+  EXPECT_EQ(graph.wheelScaleSegments().size(), 2u);
+  // a mirror graph keeps every segment constant and copies the values
+  okvis::ViGraphEstimator mirror;
+  mirror.addImu(imuParameters);
+  mirror.addCamera(cameraParameters);
+  mirror.setWheelScaleMirror(true);
+  mirror.addWheel(w);
+  const okvis::StateId m0 = mirror.addStatesInitialise(t0, imu, cameras);
+  ASSERT_TRUE(mirror.addWheelMeasurement(m0, meas(m0, 0.1), imu));
+  EXPECT_EQ(mirror.variableWheelScaleBlock(), nullptr);
+  EXPECT_TRUE(mirror.wheelScaleSegments()[0].frozen);
+  EXPECT_DOUBLE_EQ(mirror.wheelScaleSegments()[0].sigma, 0.0);
+  *graph.variableWheelScaleBlock() = 1.07;  // newest realtime segment 3334; the mirror only has 3333
+  mirror.setWheelScalesFrom(graph);
+  EXPECT_DOUBLE_EQ(mirror.wheelScale(), 1.02);
+  ASSERT_TRUE(mirror.addWheelMeasurement(m0, meas(m0, 0.4), imu));   // opens 3334 at the last value
+  mirror.setWheelScalesFrom(graph);
+  EXPECT_DOUBLE_EQ(mirror.wheelScale(), 1.07);
 }

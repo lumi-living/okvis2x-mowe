@@ -6,11 +6,12 @@
  * GpsErrorAsynchronous, so that ViGraphEstimator::eliminateStateByImuMerge can
  * re-anchor the factor to an earlier state without losing it.
  *
- *   e_v = [v_x^enc, 0, 0]^T - C_BS * (C_WS(tw)^T * v_W(tw) + omega_S x r_SB)
+ *   e_v = [v_x^enc, 0, 0]^T - diag(s, 1, 1) * C_BS * (C_WS(tw)^T * v_W(tw) + omega_S x r_SB)
  *   e_w = omega_z^enc - [C_BS * (omega_S^gyro(tw) - b_g)]_z
  *
  * with T_SB the body frame B in the IMU frame S (wheel_parameters.T_SB), sigma per axis
- * (sigma_v, sigma_lat, sigma_vert, sigma_omega). The IMU preintegration covariance is
+ * (sigma_v, sigma_lat, sigma_vert, sigma_omega), and s the encoder speed scale (T-0145, a 1-D
+ * parameter block; speed only -- the yaw rate stays gyro-authoritative, ADR-0042 (3)). The IMU preintegration covariance is
  * not folded into the whitening (ponytail: the encoder sigmas dominate over the
  * <= keyframe-interval propagation; add it like GpsErrorAsynchronous::useImuCovariance
  * if bias-driven propagation error ever shows in the residual histogram).
@@ -33,16 +34,18 @@
 namespace okvis {
 namespace ceres {
 
-/// \brief Wheel odometry factor on (T_WS, SpeedAndBias) at tk, measurement at tw >= tk.
+/// \brief Wheel odometry factor on (T_WS, SpeedAndBias) at tk and the wheel scale s,
+///        measurement at tw >= tk.
 class WheelOdometryError :
     public ::ceres::SizedCostFunction<4 /* residuals: v_B xyz, omega_B z */,
         7 /* PoseParameterBlock T_WS at tk */,
-        9 /* SpeedAndBiasParameterBlock at tk */>,
+        9 /* SpeedAndBiasParameterBlock at tk */,
+        1 /* wheel speed scale s (T-0145) */>,
     public ErrorInterface {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  typedef ::ceres::SizedCostFunction<4, 7, 9> base_t;
+  typedef ::ceres::SizedCostFunction<4, 7, 9, 1> base_t;
   static const int kNumResiduals = 4;
   typedef Eigen::Vector2d measurement_t;  ///< (v_x^enc [m/s], omega_z^enc [rad/s]).
   typedef Eigen::Vector4d sigmas_t;       ///< (sigma_v, sigma_lat, sigma_vert, sigma_omega).
@@ -78,6 +81,9 @@ class WheelOdometryError :
   const Eigen::Vector3d& gyroAtTw() const { return omega_S_tw_raw_; }
   /// \brief Unweighted error of the last Evaluate().
   const Eigen::Vector4d& error() const { return error_; }
+  /// \brief T-0145: predicted body speed v_B,x [m/s] (before the scale) of the last Evaluate();
+  ///        -v_B,x / sigma_v is the whitened residual's derivative w.r.t. the scale.
+  double speedBx() const { return speedBx_; }
 
   virtual bool Evaluate(double const* const* parameters, double* residuals,
                         double** jacobians) const;
@@ -99,6 +105,7 @@ class WheelOdometryError :
   sigmas_t sigmas_;
   Eigen::Vector4d sqrtInformationDiag_;
   mutable Eigen::Vector4d error_ = Eigen::Vector4d::Zero();
+  mutable double speedBx_ = 0.0;  ///< T-0145: v_B,x of the last Evaluate().
   okvis::WheelParameters wheelParameters_;
   okvis::ImuParameters imuParameters_;
   okvis::ImuMeasurementDeque imuMeasurements_;
@@ -117,6 +124,24 @@ class WheelOdometryError :
   mutable SpeedAndBias speedAndBiases_ref_ = SpeedAndBias::Zero();
   mutable bool redo_ = true;
   mutable int redoCounter_ = 0;
+};
+
+/// \brief T-0145: Gaussian prior (s - mean) / sigma on a wheel-scale segment: the configured
+///        initial value on the first segment, the frozen predecessor's value and variance plus the
+///        random walk on every later one.
+class WheelScalePrior : public ::ceres::SizedCostFunction<1, 1> {
+ public:
+  WheelScalePrior(double mean, double sigma) : mean_(mean), sigma_(sigma) {}
+  bool Evaluate(double const* const* parameters, double* residuals, double** jacobians) const override {
+    residuals[0] = (parameters[0][0] - mean_) / sigma_;
+    if (jacobians != nullptr && jacobians[0] != nullptr) jacobians[0][0] = 1.0 / sigma_;
+    return true;
+  }
+  double mean() const { return mean_; }
+  double sigma() const { return sigma_; }
+ private:
+  double mean_;
+  double sigma_;
 };
 
 }  // namespace ceres

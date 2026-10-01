@@ -99,7 +99,10 @@ bool WheelOdometryError::EvaluateWithMinimalJacobians(double const* const* param
   const Eigen::Vector3d omega_B = C_BS * omega_S;
 
   Eigen::Vector4d error;
+  const double scale = parameters[2][0];  // T-0145: v_x^enc = s * v_B,x
+  speedBx_ = v_B[0];
   error.head<3>() = Eigen::Vector3d(measurement_[0], 0.0, 0.0) - v_B;
+  error[0] = measurement_[0] - scale * v_B[0];
   error[3] = measurement_[1] - omega_B[2];
   error_ = error;
   const Eigen::Vector4d weighted = sqrtInformationDiag_.cwiseProduct(error);
@@ -113,6 +116,7 @@ bool WheelOdometryError::EvaluateWithMinimalJacobians(double const* const* param
     J_vS.block<3, 3>(0, 9) += okvis::kinematics::crossMx(r_SB);
     Eigen::Matrix<double, 4, 15> Jmin = Eigen::Matrix<double, 4, 15>::Zero();
     Jmin.topRows<3>() = -C_BS * J_vS;
+    Jmin.row(0) *= scale;  // T-0145
     Jmin.block<1, 3>(3, 9) = C_BS.row(2);  // d(-[C_BS (raw - b_g)]_z)/d b_g
     Jmin = sqrtInformationDiag_.asDiagonal() * Jmin;
 
@@ -132,6 +136,14 @@ bool WheelOdometryError::EvaluateWithMinimalJacobians(double const* const* param
       if (jacobiansMinimal != nullptr && jacobiansMinimal[1] != nullptr) {
         Eigen::Map<Eigen::Matrix<double, 4, 9, Eigen::RowMajor>> J1min(jacobiansMinimal[1]);
         J1min = J1;
+      }
+    }
+    if (jacobians[2] != nullptr) {  // T-0145: d e / d s = (-v_B,x, 0, 0, 0), whitened
+      Eigen::Map<Eigen::Vector4d> J2(jacobians[2]);
+      J2 = Eigen::Vector4d(-sqrtInformationDiag_[0] * v_B[0], 0.0, 0.0, 0.0);
+      if (jacobiansMinimal != nullptr && jacobiansMinimal[2] != nullptr) {
+        Eigen::Map<Eigen::Vector4d> J2min(jacobiansMinimal[2]);
+        J2min = J2;
       }
     }
   }

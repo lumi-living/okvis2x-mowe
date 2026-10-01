@@ -794,6 +794,13 @@ bool ViParametersReader::getWheelCalibration(const cv::FileNode& node, okvis::Wh
   parseEntry(node, "slip_gate_v", p.slip_gate_v);
   parseEntry(node, "loss", p.loss);
   if (node["max_rate_hz"].isReal() || node["max_rate_hz"].isInt()) p.max_rate_hz = double(node["max_rate_hz"]);  // T-0144
+  // mow-e (T-0145): optional wheel-scale state (Parameters.hpp WheelParameters::scale*)
+  for (auto kv : {std::make_pair("scale", &p.scale), std::make_pair("scale_sigma", &p.scale_sigma),
+                  std::make_pair("scale_walk", &p.scale_walk), std::make_pair("scale_segment_s", &p.scale_segment_s)}) {
+    if (node[kv.first].isReal() || node[kv.first].isInt()) *kv.second = double(node[kv.first]);
+  }
+  OKVIS_ASSERT_TRUE(Exception, p.scale > 0.5 && p.scale < 2.0 && p.scale_sigma >= 0.0 && p.scale_walk >= 0.0
+                    && p.scale_segment_s > 0.0, "wheel_parameters: scale in (0.5, 2), scale_sigma/scale_walk >= 0, scale_segment_s > 0")
   OKVIS_ASSERT_TRUE(Exception, p.loss == "cauchy" || p.loss == "huber",
                     "wheel_parameters.loss must be cauchy|huber, got " << p.loss)
   OKVIS_ASSERT_TRUE(Exception, p.b_eff > 0.0 && p.sigma_v > 0.0 && p.sigma_lat > 0.0

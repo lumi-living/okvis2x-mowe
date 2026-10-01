@@ -525,6 +525,25 @@ class ViGraph
   size_t numWheelFactors() const;
   /// \brief The k-th wheel error term of a state (nullptr if none).
   std::shared_ptr<const ceres::WheelOdometryError> wheelErrorTerm(StateId id, size_t k) const;
+  /// \brief T-0145: one piecewise-constant wheel-scale segment (for stats / tests).
+  struct WheelScaleSegmentInfo {
+    okvis::Time start;      ///< Segment start (k * scale_segment_s on the IMU clock).
+    double value = 1.0;     ///< Current estimate.
+    double sigma = 0.0;     ///< Prior sigma on this segment (0 = no prior: mirror / not estimated).
+    double frozenSigma = 0.0; ///< Posterior sigma handed on when frozen (0 while variable).
+    bool frozen = false;    ///< Constant in the problem.
+  };
+  std::vector<WheelScaleSegmentInfo> wheelScaleSegments() const;
+  /// \brief T-0145: wheel scale of the newest segment (wheel_parameters.scale before the first
+  ///        measurement, NaN without wheel odometry).
+  double wheelScale() const;
+  /// \brief T-0145: this graph keeps every scale segment constant and takes the values from
+  ///        another graph (the full graph mirrors the realtime graph, like T_GW).
+  void setWheelScaleMirror(bool mirror) { wheelScaleMirror_ = mirror; }
+  /// \brief T-0145: copy the scale values of all segments both graphs have.
+  void setWheelScalesFrom(const ViGraph& other);
+  /// \brief T-0145: the variable scale block, or nullptr (to freeze it around a sub-solve).
+  double* variableWheelScaleBlock();
   /// \}
 
   /// \brief Check if GPS trafo is fixed
@@ -933,6 +952,22 @@ protected:
   std::optional<okvis::WheelParameters> wheelParameters_; ///< Set by addWheel().
   WheelFactorStats wheelFactorStats_; ///< Wheel factor bookkeeping.
   std::shared_ptr< ::ceres::LossFunction> wheelLossFunctionPtr_; ///< Cauchy or Huber per wheel_parameters.loss.
+  /// \brief T-0145: wheel-scale segment k covers [k T, (k+1) T) on the IMU clock (T = scale_segment_s;
+  ///        one segment, k = 0, when the scale is not estimated).
+  struct WheelScaleSegment {
+    std::shared_ptr<double> s;                      ///< The 1-D parameter block.
+    std::shared_ptr<ceres::WheelScalePrior> prior;  ///< nullptr: no prior (mirror / not estimated).
+    ::ceres::ResidualBlockId priorId = nullptr;
+    double frozenSigma = 0.0;
+    bool frozen = false;
+  };
+  std::map<int64_t, WheelScaleSegment> wheelScaleSegments_;
+  bool wheelScaleMirror_ = false;
+  bool estimateWheelScale() const { return wheelParameters_ && wheelParameters_->scale_sigma > 0.0; }
+  int64_t wheelScaleSegmentIndex(const okvis::Time& t) const;
+  /// \brief The scale block a measurement at tw uses; opens (and freezes the predecessor of) a new
+  ///        segment when tw is past the newest one.
+  double* wheelScaleBlock(const okvis::Time& tw);
 
 
   /// \brief Store 4D local parametrisation (position, yaw) for GPS extrinsics locally

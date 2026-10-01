@@ -277,6 +277,16 @@ struct WheelParameters {
     /// Every factor lives on in the realtime and full graphs with its IMU span: at 100 Hz they were
     /// the largest growing container of a 25-minute sim mission (~1 MB/s with the IMU copies).
     double max_rate_hz = 0.0;
+    /// mow-e (T-0145, optional): encoder speed scale s in v_x^enc = s * v_B,x (ADR-0042 (3); speed
+    /// only, the yaw rate stays gyro-authoritative). `scale` is the initial value (the T-0137
+    /// calibration record when there is one, else 1.0). `scale_sigma` > 0 turns the online estimate
+    /// on: prior sigma of the first segment. The state is piecewise constant over `scale_segment_s`
+    /// segments chained by a random walk of `scale_walk` [1/sqrt(s)]; only the newest segment is
+    /// variable, older ones are frozen and pass their value and variance on as the next prior.
+    double scale = 1.0;
+    double scale_sigma = 0.0;
+    double scale_walk = 2.0e-4;
+    double scale_segment_s = 10.0;
 };
 
 /// @brief  Struct to specify the parameters of a LiDAR sensor

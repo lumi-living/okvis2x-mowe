@@ -1280,6 +1280,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
     // mow-e T-0501: the current State never had T_GW set (only updatedStates did), so the
     // optimised-graph callback reported identity and map collapsed onto W (ADR-0042 §(4)).
     publicationData.state.T_GW = estimator_.T_GW();
+    publicationData.state.wheelScale = estimator_.wheelScale();  // T-0145
     publicationData.trackingState = trackingState;
     publicationData.updatedStates.reset(new AlignedMap<StateId, State>());
     if(updatedStatesSync.size()>0) {
@@ -1614,6 +1615,7 @@ void ThreadedSlam::stopThreading() {
         // mow-e T-0501: the current State never had T_GW set (only updatedStates did), so the
         // optimised-graph callback reported identity and map collapsed onto W (ADR-0042 §(4)).
         publicationData.state.T_GW = estimator_.T_GW();
+        publicationData.state.wheelScale = estimator_.wheelScale();  // T-0145
         publicationData.trackingState = trackingState;
         publicationData.updatedStates.reset(new AlignedMap<StateId, State>());
         for (const auto &id : updatedStates) {
@@ -1822,6 +1824,14 @@ void ThreadedSlam::writeWheelStatsJson(const std::string& jsonFileName)
   f << "  \"backlog_dropped_full\": " << s.backlogDropped << ",\n";
   f << "  \"factors_survive_elimination_ratio\": "
     << (s.full.added ? double(s.factorsInFullGraph) / double(s.full.added) : 0.0) << ",\n";
+  // T-0145: realtime-graph wheel-scale segments [start_s, value, prior sigma, frozen sigma]
+  f << "  \"wheel_scale_final\": " << estimator_.wheelScale() << ",\n";
+  f << "  \"wheel_scale_segments\": [";
+  for(size_t i = 0; i < s.scaleSegments.size(); ++i) {
+    const auto& g = s.scaleSegments[i];
+    f << (i ? ", " : "") << "[" << g.start.toSec() << ", " << g.value << ", " << g.sigma << ", " << g.frozenSigma << "]";
+  }
+  f << "],\n";
   f << "  \"gated_times_ns\": [";
   for(size_t i = 0; i < s.realtime.gatedTimesNs.size(); ++i) {
     f << (i ? ", " : "") << s.realtime.gatedTimesNs[i];
@@ -1956,6 +1966,7 @@ void ThreadedSlam::doFinalBa()
     // mow-e T-0501: the current State never had T_GW set (only updatedStates did), so the
     // optimised-graph callback reported identity and map collapsed onto W (ADR-0042 §(4)).
     publicationData.state.T_GW = estimator_.T_GW();
+    publicationData.state.wheelScale = estimator_.wheelScale();  // T-0145
     publicationData.trackingState = trackingState;
     publicationData.updatedStates.reset(new AlignedMap<StateId, State>());
     for(const auto & id : updatedStatesBa) {

@@ -357,6 +357,7 @@ int main(int argc, char **argv) {
         for (const auto &u : *updatedStates)
           if (!u.second.gpsPoints.empty() && u.second.timestamp > lastGpsStateTime) lastGpsStateTime = u.second.timestamp;
         msg.last_rtk_factor_stamp = rclcpp::Time(lastGpsStateTime.sec, lastGpsStateTime.nsec);
+        msg.wheel_scale = state.wheelScale;  // T-0145 (NaN without wheel_parameters)
         estimatorStatePublisher->publish(msg);
       });
 

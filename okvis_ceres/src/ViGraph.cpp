@@ -1076,7 +1076,8 @@ bool ViGraph::addWheelMeasurement(StateId poseId, const WheelMeasurement& wheelM
     return false;
   }
   const Eigen::Vector3d v_B = C_BS * (T_WS.C().transpose() * sb.head<3>() + omega_S.cross(wp.T_SB.r()));
-  if(std::fabs(v_enc - v_B[0]) > wp.slip_gate_v) {
+  double* scale = wheelScaleBlock(wheelMeas.timeStamp);  // T-0145
+  if(std::fabs(v_enc - *scale * v_B[0]) > wp.slip_gate_v) {
     ++wheelFactorStats_.gatedV;
     sigmas[0] *= 4.0;
     gated = true;
@@ -1094,10 +1095,97 @@ bool ViGraph::addWheelMeasurement(StateId poseId, const WheelMeasurement& wheelM
       imuParametersVec_.back(), state.timestamp, wheelMeas.timeStamp, wp));
   factor.residualBlockId = problem_->AddResidualBlock(
       factor.errorTerm.get(), wheelLossFunctionPtr_.get(),
-      state.pose->parameters(), state.speedAndBias->parameters());
+      state.pose->parameters(), state.speedAndBias->parameters(), scale);
   state.WheelFactors.push_back(factor);
   ++wheelFactorStats_.added;
   return true;
+}
+
+// mow-e (T-0145): wheel-scale segments. The scale s (v_x^enc = s v_B,x) is piecewise constant
+// over scale_segment_s; segments are chained by a random walk (scale_walk / sqrt(s)). OKVIS never
+// marginalises, it freezes: only the newest segment is variable, and when a measurement opens a
+// new segment the previous one is frozen at its estimate with the posterior variance
+//   1/P = 1/sigma_prior^2 + sum_i (v_B,x,i / sigma_v,i)^2      (its wheel factors, last evaluation)
+// which, plus the walk over the gap, becomes the new segment's prior sigma. The pose/velocity
+// coupling is ignored in P (ponytail: optimistic; take the Schur complement if a frozen segment
+// ever pins the scale away from the truth). Index on the absolute IMU-clock time, so the realtime
+// and full graphs agree on the segments whatever measurement each saw first.
+int64_t ViGraph::wheelScaleSegmentIndex(const okvis::Time& t) const {
+  if(!estimateWheelScale()) return 0;
+  return int64_t(std::floor(t.toSec() / wheelParameters_->scale_segment_s));
+}
+
+double* ViGraph::wheelScaleBlock(const okvis::Time& tw) {
+  const WheelParameters& wp = *wheelParameters_;
+  const int64_t k = wheelScaleSegmentIndex(tw);
+  if(!wheelScaleSegments_.empty() && wheelScaleSegments_.rbegin()->first >= k) {
+    auto it = wheelScaleSegments_.upper_bound(k);  // newest segment at/before k (else the first)
+    if(it != wheelScaleSegments_.begin()) --it;
+    return it->second.s.get();
+  }
+  WheelScaleSegment seg;
+  seg.s.reset(new double(wheelScaleSegments_.empty() ? wp.scale : *wheelScaleSegments_.rbegin()->second.s));
+  problem_->AddParameterBlock(seg.s.get(), 1);
+  if(!estimateWheelScale() || wheelScaleMirror_) {
+    problem_->SetParameterBlockConstant(seg.s.get());
+    seg.frozen = true;
+    return wheelScaleSegments_.emplace(k, seg).first->second.s.get();
+  }
+  double mean = wp.scale, sigma = wp.scale_sigma;
+  if(!wheelScaleSegments_.empty()) {
+    // freeze the predecessor j with its posterior variance, hand it on through the walk
+    auto& [j, prev] = *wheelScaleSegments_.rbegin();
+    const okvis::Time start(double(j) * wp.scale_segment_s), end(double(j + 1) * wp.scale_segment_s);
+    double information = 1.0 / (prev.prior->sigma() * prev.prior->sigma());
+    for(auto st = states_.rbegin(); st != states_.rend(); ++st) {
+      for(const auto& f : st->second.WheelFactors) {
+        if(f.errorTerm->tw() < start || !(f.errorTerm->tw() < end)) continue;
+        const double d = f.errorTerm->speedBx() / f.errorTerm->sigmas()[0];
+        information += d * d;
+      }
+      if(st->second.timestamp < start) break;  // older states only hold older measurements
+    }
+    prev.frozenSigma = std::sqrt(1.0 / information);
+    prev.frozen = true;
+    problem_->SetParameterBlockConstant(prev.s.get());
+    mean = *prev.s;
+    sigma = std::sqrt(prev.frozenSigma * prev.frozenSigma
+                      + wp.scale_walk * wp.scale_walk * double(k - j) * wp.scale_segment_s);
+  }
+  seg.prior.reset(new ceres::WheelScalePrior(mean, sigma));
+  seg.priorId = problem_->AddResidualBlock(seg.prior.get(), nullptr, seg.s.get());
+  return wheelScaleSegments_.emplace(k, seg).first->second.s.get();
+}
+
+std::vector<ViGraph::WheelScaleSegmentInfo> ViGraph::wheelScaleSegments() const {
+  std::vector<WheelScaleSegmentInfo> out;
+  for(const auto& [k, seg] : wheelScaleSegments_) {
+    WheelScaleSegmentInfo i;
+    i.start = estimateWheelScale() ? okvis::Time(double(k) * wheelParameters_->scale_segment_s) : okvis::Time(0.0);
+    i.value = *seg.s;
+    i.sigma = seg.prior ? seg.prior->sigma() : 0.0;
+    i.frozenSigma = seg.frozenSigma;
+    i.frozen = seg.frozen;
+    out.push_back(i);
+  }
+  return out;
+}
+
+double ViGraph::wheelScale() const {
+  if(!wheelParameters_) return std::numeric_limits<double>::quiet_NaN();
+  return wheelScaleSegments_.empty() ? wheelParameters_->scale : *wheelScaleSegments_.rbegin()->second.s;
+}
+
+void ViGraph::setWheelScalesFrom(const ViGraph& other) {
+  for(auto& [k, seg] : wheelScaleSegments_) {
+    auto it = other.wheelScaleSegments_.find(k);
+    if(it != other.wheelScaleSegments_.end()) *seg.s = *it->second.s;
+  }
+}
+
+double* ViGraph::variableWheelScaleBlock() {
+  if(wheelScaleSegments_.empty() || wheelScaleSegments_.rbegin()->second.frozen) return nullptr;
+  return wheelScaleSegments_.rbegin()->second.s.get();
 }
 
 // mow-e (T-0125): mirrors addGpsMeasurements' reverse walk (latest state at/before each measurement).

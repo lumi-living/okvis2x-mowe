@@ -332,6 +332,11 @@ class ViSlamBackend //: public VioBackendInterface
     return realtimeGraph_.T_GW();
   }
 
+  /// \brief mow-e (T-0145): wheel scale of the realtime graph's newest segment (NaN without wheels).
+  double wheelScale() const {
+    return realtimeGraph_.wheelScale();
+  }
+
   /// \brief Get gps Measurements
   /// \param states set of states for which GPS measurements should be returned
   /// \param gpsMeasurements[output] Fill with measurements
@@ -365,6 +370,7 @@ class ViSlamBackend //: public VioBackendInterface
     ViGraph::WheelFactorStats full;     ///< Counters of the full graph.
     size_t factorsInRealtimeGraph = 0;  ///< Wheel factors currently attached in the realtime graph.
     size_t factorsInFullGraph = 0;      ///< Wheel factors currently attached in the full graph.
+    std::vector<ViGraph::WheelScaleSegmentInfo> scaleSegments; ///< T-0145: realtime-graph scale segments.
     size_t backlogReanchored = 0;       ///< Loop-closure-backlogged measurements re-anchored (full graph).
     size_t backlogDropped = 0;          ///< Backlogged measurements that could not be attached.
   };

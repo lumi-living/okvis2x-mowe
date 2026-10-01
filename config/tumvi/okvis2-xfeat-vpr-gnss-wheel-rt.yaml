@@ -166,6 +166,7 @@ gps_parameters:
 #   slip_gate_omega  |omega_enc - omega_gyro| [rad/s] above which the measurement is skipped
 #   slip_gate_v      |v_enc - v_B,x| [m/s] above which sigma_v is inflated x4
 #   loss             cauchy | huber on the whitened residual
+# T-0145: scale* = online encoder speed scale (see okvis2-brisk-vpr-gnss-wheel.yaml)
 wheel_parameters:
     T_SB:
         [1.0, 0.0, 0.0, 0.0,
@@ -180,3 +181,7 @@ wheel_parameters:
     slip_gate_omega: 0.15
     slip_gate_v: 0.3
     loss: cauchy
+    scale: 1.0
+    scale_sigma: 0.05
+    scale_walk: 0.0002
+    scale_segment_s: 10.0

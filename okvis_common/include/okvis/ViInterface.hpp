@@ -186,6 +186,8 @@ struct State {
   AlignedMap<uint64_t, kinematics::Transformation> extrinsics; ///< up-to-date cam-IMU extrinsics T_SCs if online calibration.
   kinematics::Transformation T_GW; ///< The current estimate of the Extrinsics World to GPS
   AlignedVector<Eigen::Vector3d> gpsPoints; ///< The current GPS points.
+  /// mow-e (T-0145): wheel speed scale of the newest segment (NaN without wheel odometry).
+  double wheelScale = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// @brief Simple enum to denote the tracking quality.

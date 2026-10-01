@@ -17,6 +17,7 @@
  * @author Andreas Forster
  */
 
+#include <cmath>
 #include <iostream>
 #include <fstream>
 #include <stdlib.h>
@@ -219,7 +220,13 @@ int main(int argc, char **argv)
         << ",\"keyframe\":" << (ts.isKeyframe ? 1 : 0) << ",\"loop\":" << (ts.recognisedPlace ? 1 : 0)
         << ",\"q_score\":" << ts.qualityScore << ",\"kpts\":" << ts.numKeypoints  // T-0144
         << ",\"matched\":" << ts.numMatched
-        << ",\"n_updated\":" << updated->size() << ",\"t_last_gps_ns\":" << uint64_t(lastGps.toNSec()) << "}\n";
+        << ",\"n_updated\":" << updated->size() << ",\"t_last_gps_ns\":" << uint64_t(lastGps.toNSec());
+      if (std::isfinite(state.wheelScale)) {  // T-0145: wheel speed scale (newest segment)
+        char b[32];
+        snprintf(b, sizeof b, "%.6f", state.wheelScale);
+        f << ",\"wheel_scale\":" << b;
+      }
+      f << "}\n";
     }
   } statesLogWriter;
   if (!statesLog.empty()) {

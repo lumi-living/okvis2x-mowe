@@ -177,6 +177,11 @@ static void writeLiveDiagnostics(okvis::ThreadedSlam& estimator) {
   const std::string dir = g_stats.path.substr(0, g_stats.path.find_last_of('/') + 1);
   estimator.writeOptimiserStatsJson(dir + "okvis_optimiser_stats.json");
   std::ofstream(dir + "okvis_timing.txt") << okvis::timing::Timing::print();
+  // T-0143: the replay app's front-end / VPR funnel counters (LighterGlue stereo fallbacks,
+  // loop verifications) for the live run's GPU-share accounting.
+  estimator.frontend().writeStatsJson(dir + "okvis_frontend_stats.json");
+  if (estimator.frontend().usingVprLoopClosure())
+    estimator.frontend().writeLoopStatsJson(dir + "okvis_loop_stats.json");
 }
 
 /// \brief Last-ditch: record the crash in the stats file, then die normally.

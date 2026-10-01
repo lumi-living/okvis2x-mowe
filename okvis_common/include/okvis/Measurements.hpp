@@ -20,6 +20,7 @@
 #ifndef INCLUDE_OKVIS_MEASUREMENTS_HPP_
 #define INCLUDE_OKVIS_MEASUREMENTS_HPP_
 
+#include <algorithm>
 #include <deque>
 #include <vector>
 #include <memory>
@@ -155,6 +156,20 @@ typedef Measurement<ImuSensorReadings> ImuMeasurement;
 
 /// \brief IMU measurement queue.
 typedef std::deque<ImuMeasurement, Eigen::aligned_allocator<ImuMeasurement> > ImuMeasurementDeque;
+
+/// \brief mow-e (T-0144): the IMU samples a factor over [t0, t1] needs — the last one at/before t0
+///        through the first one at/after t1 (fewer at the ends if imu does not bracket the span).
+///        GNSS/wheel factors used to copy ThreadedSlam's whole IMU deque each (100 wheel factors/s),
+///        which grew a sim-mission replay to > 3 GB on the Orin Nano.
+inline ImuMeasurementDeque imuSpan(const ImuMeasurementDeque& imu, const Time& t0, const Time& t1) {
+  auto b = std::upper_bound(imu.begin(), imu.end(), t0,
+                            [](const Time& t, const ImuMeasurement& m) { return t < m.timeStamp; });
+  if (b != imu.begin()) --b;
+  auto e = std::lower_bound(b, imu.end(), t1,
+                            [](const ImuMeasurement& m, const Time& t) { return m.timeStamp < t; });
+  if (e != imu.end()) ++e;
+  return ImuMeasurementDeque(b, e);
+}
 
 /// \brief Lidar measurement.
 typedef Measurement<LidarSensorReadings> LidarMeasurement;

@@ -416,6 +416,7 @@ private:
   int lastGpsStatus_ = -1; ///< mow-e (T-0117).
   WheelMeasurementDeque wheelMeasurementDeque_; ///< mow-e (T-0125): wheel measurements to be used next.
   std::atomic<size_t> wheelReceived_{0}; ///< mow-e (T-0125): addWheelMeasurement() calls.
+  okvis::Time lastWheelAccepted_; ///< mow-e (T-0144): wheel_parameters.max_rate_hz bookkeeping.
   std::atomic<size_t> wheelBeffMismatch_{0}; ///< mow-e (T-0125): messages whose b_eff differs > 5 % from the config.
   LidarMeasurementDeque lidarMeasurementDeque_;  ///< Stored lidar Measurements to be used next.
   DepthMeasurementDeque depthMeasurementDeque_; ///< Stored depth Measurements to be used next.

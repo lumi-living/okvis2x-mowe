@@ -785,6 +785,7 @@ bool ViParametersReader::getWheelCalibration(const cv::FileNode& node, okvis::Wh
   parseEntry(node, "slip_gate_omega", p.slip_gate_omega);
   parseEntry(node, "slip_gate_v", p.slip_gate_v);
   parseEntry(node, "loss", p.loss);
+  if (node["max_rate_hz"].isReal() || node["max_rate_hz"].isInt()) p.max_rate_hz = double(node["max_rate_hz"]);  // T-0144
   OKVIS_ASSERT_TRUE(Exception, p.loss == "cauchy" || p.loss == "huber",
                     "wheel_parameters.loss must be cauchy|huber, got " << p.loss)
   OKVIS_ASSERT_TRUE(Exception, p.b_eff > 0.0 && p.sigma_v > 0.0 && p.sigma_lat > 0.0

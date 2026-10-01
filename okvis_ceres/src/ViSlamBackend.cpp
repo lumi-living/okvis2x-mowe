@@ -3291,6 +3291,22 @@ void ViSlamBackend::writeMemoryAudit(std::ostream& os) const {
     }
     pgConstLinks += st.second.twoPoseConstLinks.size();
   }
+  // mow-e (T-0144): GNSS/wheel factors and the IMU samples their error terms hold, per graph
+  auto factorCounts = [](const ViGraph& g, size_t& gps, size_t& wheel, size_t& imu) {
+    gps = wheel = imu = 0;
+    for (const auto& st : g.states_) {
+      gps += st.second.GpsFactors.size();
+      wheel += st.second.WheelFactors.size();
+      for (const auto& f : st.second.GpsFactors) imu += f.errorTerm->imuMeasurements().size();
+      for (const auto& f : st.second.WheelFactors) imu += f.errorTerm->imuMeasurements().size();
+    }
+  };
+  size_t rtGps, rtWheel, rtImu, fgGps, fgWheel, fgImu;
+  factorCounts(realtimeGraph_, rtGps, rtWheel, rtImu);
+  factorCounts(fullGraph_, fgGps, fgWheel, fgImu);
+  os << "\"rt_gps_factors\": " << rtGps << ", \"rt_wheel_factors\": " << rtWheel << ", \"rt_factor_imu\": " << rtImu
+     << ", \"fg_gps_factors\": " << fgGps << ", \"fg_wheel_factors\": " << fgWheel << ", \"fg_factor_imu\": " << fgImu
+     << ", ";
   os << "\"rt_pg_links\": " << pgLinks << ", \"rt_pg_link_observations\": " << pgObservations
      << ", \"rt_pg_link_landmarks\": " << pgLandmarks << ", \"rt_pg_const_links_x2\": " << pgConstLinks << ", ";
   os << "\"multiframes\": " << multiFrames_.size() << ", \"multiframes_with_images\": " << withImages

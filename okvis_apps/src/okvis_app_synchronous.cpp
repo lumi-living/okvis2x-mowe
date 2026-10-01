@@ -161,6 +161,8 @@ int main(int argc, char **argv)
 
   okvis::ThreadedSlam estimator(parameters, dBowVocDir);
   estimator.setBlocking(true);
+  // mow-e (T-0144): MOWE_MEMORY_AUDIT=<file.jsonl> → the T-0142 per-container audit every 300 frames
+  if (const char* audit = std::getenv("MOWE_MEMORY_AUDIT")) estimator.setMemoryAudit(audit, 300);
   if (!preloadMap.empty()) {
     // T-0120: foreign map = retrieval database of another run (false-loop test).
     if (!estimator.frontend().loadForeignKeyframes(preloadMap, parameters.nCameraSystem)) {

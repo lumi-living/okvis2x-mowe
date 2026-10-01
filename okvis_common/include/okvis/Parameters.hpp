@@ -268,6 +268,10 @@ struct WheelParameters {
     double slip_gate_omega = 0.2; ///< |omega_enc - omega_gyro| above this [rad/s] -> factor skipped.
     double slip_gate_v = 0.3;    ///< |v_enc - v_B,x(state)| above this [m/s] -> sigma_v inflated.
     std::string loss = "cauchy"; ///< Robust loss: "cauchy" | "huber".
+    /// mow-e (T-0144, optional): accept at most this many wheel measurements per second (0 = all).
+    /// Every factor lives on in the realtime and full graphs with its IMU span: at 100 Hz they were
+    /// the largest growing container of a 25-minute sim mission (~1 MB/s with the IMU copies).
+    double max_rate_hz = 0.0;
 };
 
 /// @brief  Struct to specify the parameters of a LiDAR sensor

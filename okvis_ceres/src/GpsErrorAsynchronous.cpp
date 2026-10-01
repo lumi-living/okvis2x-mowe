@@ -40,7 +40,7 @@ GpsErrorAsynchronous::GpsErrorAsynchronous(const measurement_t & measurement, co
                                            const okvis::GpsParameters & gpsParameters){
     setMeasurement(measurement);
     setInformation(information);
-    setImuMeasurements(imuMeasurements);
+    setImuMeasurements(okvis::imuSpan(imuMeasurements, tk, tg));  // mow-e (T-0144)
     setImuParameters(imuParameters);
     setTk(tk);
     setTg(tg);
@@ -67,7 +67,7 @@ GpsErrorAsynchronous::GpsErrorAsynchronous(const measurement_t & measurement, co
 
     setMeasurement(measurement);
     setInformation(informationMat);
-    setImuMeasurements(imuMeasurements);
+    setImuMeasurements(okvis::imuSpan(imuMeasurements, tk, tg));  // mow-e (T-0144)
     setImuParameters(imuParameters);
     setTk(tk);
     setTg(tg);

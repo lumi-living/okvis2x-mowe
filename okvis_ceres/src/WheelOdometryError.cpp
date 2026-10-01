@@ -21,7 +21,8 @@ WheelOdometryError::WheelOdometryError(const measurement_t& measurement, const s
                                        const okvis::Time& tk, const okvis::Time& tw,
                                        const okvis::WheelParameters& wheelParameters)
     : measurement_(measurement), sigmas_(sigmas), wheelParameters_(wheelParameters),
-      imuParameters_(imuParameters), imuMeasurements_(imuMeasurements), tk_(tk), tw_(tw) {
+      imuParameters_(imuParameters), imuMeasurements_(okvis::imuSpan(imuMeasurements, tk, tw)),  // T-0144
+      tk_(tk), tw_(tw) {
   sqrtInformationDiag_ = sigmas_.cwiseInverse();
   omega_S_tw_raw_ = gyroAt(imuMeasurements_, tw_);
 }

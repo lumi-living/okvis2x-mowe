@@ -68,3 +68,4 @@ wheel_parameters:
   slip_gate_omega: 0.15
   slip_gate_v: 0.3
   loss: cauchy
+  max_rate_hz: 10.0

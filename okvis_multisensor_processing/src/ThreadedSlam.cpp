@@ -457,6 +457,12 @@ bool ThreadedSlam::addWheelMeasurement(const okvis::Time& stamp, double vLeft, d
     LOG_EVERY_N(WARNING, 500) << "[wheel] publisher b_eff " << bEff << " m differs > 5 % from wheel_parameters.b_eff "
                               << parameters_.wheel->b_eff << " m (stale calibration?)";
   }
+  // mow-e (T-0144): wheel_parameters.max_rate_hz (Parameters.hpp); slip-flagged readings always pass
+  if(parameters_.wheel->max_rate_hz > 0.0 && slipFlag == 0 && lastWheelAccepted_ != okvis::Time(0)
+     && (stamp - lastWheelAccepted_).toSec() < 1.0 / parameters_.wheel->max_rate_hz - 1e-4) {
+    return true;
+  }
+  lastWheelAccepted_ = stamp;
   okvis::WheelMeasurement m;
   m.timeStamp = stamp;
   m.measurement = okvis::WheelSensorReadings(vLeft, vRight, bEff, slipFlag);

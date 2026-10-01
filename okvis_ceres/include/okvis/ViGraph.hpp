@@ -122,6 +122,10 @@ class ViGraph
    */
   int addGps(const okvis::GpsParameters & gpsParameters);
 
+  /// \brief mow-e (T-0146, ADR-0042 §(2)): the robust loss every GNSS factor is added with
+  ///        (gps_parameters.loss / loss_scale, set by addGps()).
+  const ::ceres::LossFunction* gpsLossFunction() const { return cauchyGpsLossFunctionPtr_.get(); }
+
   /// \brief mow-e (T-0125, ADR-0042 design item 3): configure wheel odometry (one sensor).
   /// \return 0.
   int addWheel(const okvis::WheelParameters & wheelParameters);

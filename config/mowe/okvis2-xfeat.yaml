@@ -202,3 +202,8 @@ gps_parameters:
     yaw_error_threshold: 1.0 # [deg] yaw sigma below which T_GW is frozen
     robust_gps_init: false   # RTK - gate on fix type upstream; the robust mode's
                              # hard-coded 4 m RANSAC / 3-sigma gates are SPP-tuned.
+    # ADR-0042 (2026-10-02 update, T-0146): Huber(15 sigma) on the whitened GNSS residual
+    # instead of upstream Cauchy(3) -- bounded influence, but a fix never stops pulling, so the
+    # estimator re-attaches to RTK after a VIO excursion. No trailing comment on the loss line.
+    loss: huber
+    loss_scale: 15.0

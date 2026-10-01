@@ -152,11 +152,15 @@ output_parameters:
 #   r_SA                 antenna in the IMU frame S [m]; = tumvi_synth_gnss.py --r-sa default
 #   yaw_error_threshold  [deg] yaw sigma of the Umeyama fit below which T_GW is frozen
 #   robust_gps_init      RTK, already gated upstream; the robust mode's gates are SPP-tuned
+#   loss, loss_scale     robust loss on the whitened residual, scale in sigma (ADR-0042 2026-10-02, T-0146):
+#                        Huber(15) -- upstream Cauchy(3) all but drops RTK fixes once VIO is a decimetre off
 gps_parameters:
     data_type: cartesian
     r_SA: [ 0.05, -0.02, 0.10 ]
     yaw_error_threshold: 1.0
     robust_gps_init: false
+    loss: huber
+    loss_scale: 15.0
 
 # mow-e (T-0125): wheel odometry (WheelOdometryError on T_WS, SpeedAndBias; ADR-0042 (3)).
 # NO trailing comments in this block (cv::FileStorage keeps "# ..." in string scalars).

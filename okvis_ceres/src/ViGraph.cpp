@@ -289,7 +289,9 @@ int ViGraph::addGps(const GpsParameters& gpsParameters) {
     return -1;
   }
   gpsParametersVec_.push_back(gpsParameters);
-  // mow-e (T-0144): configurable GNSS loss (Parameters.hpp GpsParameters::loss); set before any GNSS factor exists
+  // mow-e (T-0144): configurable GNSS loss (Parameters.hpp GpsParameters::loss); set before any GNSS factor exists.
+  // ADR-0042 §(2) (2026-10-02 update, T-0146): live configs use Huber(15) -- at RTK sigma, Cauchy(3) all but
+  // drops every fix once VIO is a decimetre off; Huber's influence is bounded at 15 sigma but never vanishes.
   if (gpsParameters.loss == "huber") {
     cauchyGpsLossFunctionPtr_.reset(new ::ceres::HuberLoss(gpsParameters.lossScale));
   } else {

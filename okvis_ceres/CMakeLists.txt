@@ -114,6 +114,7 @@ if(BUILD_TESTS)
     #test/TestPoseGraphError.cpp
     test/TestGpsError.cpp
     test/TestGpsMerge.cpp # mow-e (T-0117): GNSS factors survive eliminateStateByImuMerge
+    test/TestGpsLoss.cpp # mow-e (T-0146): GNSS robust loss selection + weight table (ADR-0042 §(2))
     test/TestWheelOdometryError.cpp # mow-e (T-0125): wheel factor Jacobians, gating, merge
     test/TestNewestStateSolve.cpp # mow-e (T-0141): non-keyframe solve moves only the newest state
     test/TestDeterministicRemoval.cpp # mow-e (T-0131): Ceres fast removal in program order, not by address
